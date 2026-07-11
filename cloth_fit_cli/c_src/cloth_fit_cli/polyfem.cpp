@@ -1,4 +1,4 @@
-#include "polyfem.h"
+#include <fine.hpp>
 
 // PolyFEM includes
 #include <polyfem/garment/optimize.hpp>
@@ -44,6 +44,20 @@ using json = nlohmann::json;
 using namespace polyfem;
 using namespace polyfem::solver;
 using namespace polyfem::mesh;
+
+// Helpers for building the {:ok, _} / {:error, reason} result tuples that the
+// Elixir API (ClothFitCli.PolyFEM) pattern-matches on.
+namespace {
+    fine::Term ok_string(ErlNifEnv* env, const std::string& value) {
+        return fine::encode(env, fine::Ok<std::string>(value));
+    }
+    fine::Term ok_bool(ErlNifEnv* env, bool value) {
+        return fine::encode(env, fine::Ok<bool>(value));
+    }
+    fine::Term error(ErlNifEnv* env, const std::string& reason) {
+        return fine::encode(env, fine::Error<std::string>(reason));
+    }
+}
 
 // Simple JSON implementation for basic operations (fallback)
 namespace simple_json {
@@ -152,26 +166,20 @@ struct SimpleMesh {
     }
 };
 
-UNIFEX_TERM simulate(UnifexEnv* env, UnifexPayload* config, char* output_path) {
+fine::Term simulate(ErlNifEnv* env, std::string config, std::string output_path) {
     // Input validation
-    if (!config || !output_path) {
-        return simulate_result_error(env, "Invalid parameters");
-    }
-
-    if (strlen(output_path) == 0) {
-        return simulate_result_error(env, "Output path cannot be empty");
+    if (output_path.empty()) {
+        return error(env, "Output path cannot be empty");
     }
 
     try {
         auto start_time = std::chrono::high_resolution_clock::now();
 
         // Extract JSON configuration from payload
-        std::string config_json;
-        if (config->data && config->size > 0) {
-            config_json = std::string(reinterpret_cast<char*>(config->data), config->size);
-        } else {
-            return simulate_result_error(env, "Empty configuration payload");
+        if (config.empty()) {
+            return error(env, "Empty configuration payload");
         }
+        std::string config_json = config;
 
         // Parse JSON configuration
         json in_args;
@@ -179,7 +187,7 @@ UNIFEX_TERM simulate(UnifexEnv* env, UnifexPayload* config, char* output_path) {
             in_args = json::parse(config_json);
         } catch (const json::parse_error& e) {
             std::string error_msg = "JSON parse error: " + std::string(e.what());
-            return simulate_result_error(env, error_msg.c_str());
+            return error(env, error_msg);
         }
 
         // Create output directory
@@ -196,7 +204,7 @@ UNIFEX_TERM simulate(UnifexEnv* env, UnifexPayload* config, char* output_path) {
             args = polyfem::init(in_args, false);
         } catch (const std::exception& e) {
             std::string error_msg = "PolyFEM initialization error: " + std::string(e.what());
-            return simulate_result_error(env, error_msg.c_str());
+            return error(env, error_msg);
         }
 
         // Create GarmentSolver instance
@@ -213,16 +221,16 @@ UNIFEX_TERM simulate(UnifexEnv* env, UnifexPayload* config, char* output_path) {
 
         // Validate input files exist
         if (!std::filesystem::exists(avatar_mesh_path)) {
-            return simulate_result_error(env, ("Invalid avatar mesh path: " + avatar_mesh_path).c_str());
+            return error(env, "Invalid avatar mesh path: " + avatar_mesh_path);
         }
         if (!std::filesystem::exists(garment_mesh_path)) {
-            return simulate_result_error(env, ("Invalid garment mesh path: " + garment_mesh_path).c_str());
+            return error(env, "Invalid garment mesh path: " + garment_mesh_path);
         }
         if (!std::filesystem::exists(source_skeleton_path)) {
-            return simulate_result_error(env, ("Invalid source skeleton path: " + source_skeleton_path).c_str());
+            return error(env, "Invalid source skeleton path: " + source_skeleton_path);
         }
         if (!std::filesystem::exists(target_skeleton_path)) {
-            return simulate_result_error(env, ("Invalid target skeleton path: " + target_skeleton_path).c_str());
+            return error(env, "Invalid target skeleton path: " + target_skeleton_path);
         }
 
         // Load meshes and prepare simulation
@@ -366,7 +374,7 @@ UNIFEX_TERM simulate(UnifexEnv* env, UnifexPayload* config, char* output_path) {
 
             nl_problem.line_search_begin(sol, sol);
             if (!std::isfinite(nl_problem.value(sol)) || !nl_problem.is_step_valid(sol, sol) || !nl_problem.is_step_collision_free(sol, sol)) {
-                return simulate_result_error(env, "Failed to apply boundary conditions!");
+                return error(env, "Failed to apply boundary conditions!");
             }
 
             // Set up solvers
@@ -411,7 +419,7 @@ UNIFEX_TERM simulate(UnifexEnv* env, UnifexPayload* config, char* output_path) {
         json result;
         result["status"] = "completed";
         result["output_path"] = output_dir;
-        result["config_size"] = config->size;
+        result["config_size"] = config.size();
         result["simulation_time"] = simulation_time;
         result["iterations"] = total_steps;
         result["message"] = "Garment retargeting succeeded!";
@@ -420,25 +428,25 @@ UNIFEX_TERM simulate(UnifexEnv* env, UnifexPayload* config, char* output_path) {
         result["total_vertices"] = gstate.nc_avatar_v.rows() + gstate.n_garment_vertices();
 
         std::string result_str = result.dump();
-        return simulate_result_ok(env, result_str.c_str());
+        return ok_string(env, result_str);
 
     } catch (const std::exception& e) {
         std::string error_msg = "Simulation error: " + std::string(e.what());
-        return simulate_result_error(env, error_msg.c_str());
+        return error(env, error_msg);
     }
 }
 
-UNIFEX_TERM validate_garment_mesh(UnifexEnv* env, char* mesh_path) {
+fine::Term validate_garment_mesh(ErlNifEnv* env, std::string mesh_path) {
     // Input validation
-    if (!mesh_path || strlen(mesh_path) == 0) {
-        return validate_garment_mesh_result_error(env, "Invalid mesh path");
+    if (mesh_path.empty()) {
+        return error(env, "Invalid mesh path");
     }
 
     try {
         // Load mesh using simple OBJ reader
         SimpleMesh mesh;
-        if (!mesh.load_obj(std::string(mesh_path))) {
-            return validate_garment_mesh_result_error(env, "Failed to read mesh file");
+        if (!mesh.load_obj(mesh_path)) {
+            return error(env, "Failed to read mesh file");
         }
 
         // Basic validation checks for garment meshes
@@ -510,28 +518,28 @@ UNIFEX_TERM validate_garment_mesh(UnifexEnv* env, char* mesh_path) {
         }
 
         if (!is_valid) {
-            return validate_garment_mesh_result_error(env, validation_errors.c_str());
+            return error(env, validation_errors);
         }
 
-        return validate_garment_mesh_result_ok(env, is_valid);
+        return ok_bool(env, is_valid);
 
     } catch (const std::exception& e) {
         std::string error_msg = "Error validating garment mesh: " + std::string(e.what());
-        return validate_garment_mesh_result_error(env, error_msg.c_str());
+        return error(env, error_msg);
     }
 }
 
-UNIFEX_TERM validate_avatar_mesh(UnifexEnv* env, char* mesh_path) {
+fine::Term validate_avatar_mesh(ErlNifEnv* env, std::string mesh_path) {
     // Input validation
-    if (!mesh_path || strlen(mesh_path) == 0) {
-        return validate_avatar_mesh_result_error(env, "Invalid mesh path");
+    if (mesh_path.empty()) {
+        return error(env, "Invalid mesh path");
     }
 
     try {
         // Load mesh using simple OBJ reader
         SimpleMesh mesh;
-        if (!mesh.load_obj(std::string(mesh_path))) {
-            return validate_avatar_mesh_result_error(env, "Failed to read mesh file");
+        if (!mesh.load_obj(mesh_path)) {
+            return error(env, "Failed to read mesh file");
         }
 
         // Basic validation checks for avatar meshes
@@ -616,28 +624,28 @@ UNIFEX_TERM validate_avatar_mesh(UnifexEnv* env, char* mesh_path) {
         }
 
         if (!is_valid) {
-            return validate_avatar_mesh_result_error(env, validation_errors.c_str());
+            return error(env, validation_errors);
         }
 
-        return validate_avatar_mesh_result_ok(env, is_valid);
+        return ok_bool(env, is_valid);
 
     } catch (const std::exception& e) {
         std::string error_msg = "Error validating avatar mesh: " + std::string(e.what());
-        return validate_avatar_mesh_result_error(env, error_msg.c_str());
+        return error(env, error_msg);
     }
 }
 
-UNIFEX_TERM load_garment_info(UnifexEnv* env, char* garment_path) {
+fine::Term load_garment_info(ErlNifEnv* env, std::string garment_path) {
     // Input validation
-    if (!garment_path || strlen(garment_path) == 0) {
-        return load_garment_info_result_error(env, "Invalid garment path");
+    if (garment_path.empty()) {
+        return error(env, "Invalid garment path");
     }
 
     try {
         // Load garment mesh using simple OBJ reader
         SimpleMesh mesh;
-        if (!mesh.load_obj(std::string(garment_path))) {
-            return load_garment_info_result_error(env, "Failed to read garment mesh file");
+        if (!mesh.load_obj(garment_path)) {
+            return error(env, "Failed to read garment mesh file");
         }
 
         // Calculate mesh statistics
@@ -657,28 +665,28 @@ UNIFEX_TERM load_garment_info(UnifexEnv* env, char* garment_path) {
         info_json["bounding_box"]["max"] = {bbox_max.x, bbox_max.y, bbox_max.z};
         info_json["bounding_box"]["size"] = {bbox_size.x, bbox_size.y, bbox_size.z};
         info_json["mesh_type"] = "garment";
-        info_json["file_path"] = std::string(garment_path);
+        info_json["file_path"] = garment_path;
 
         std::string info_str = info_json.dump();
-        return load_garment_info_result_ok(env, info_str.c_str());
+        return ok_string(env, info_str);
 
     } catch (const std::exception& e) {
         std::string error_msg = "Error loading garment info: " + std::string(e.what());
-        return load_garment_info_result_error(env, error_msg.c_str());
+        return error(env, error_msg);
     }
 }
 
-UNIFEX_TERM load_avatar_info(UnifexEnv* env, char* avatar_path) {
+fine::Term load_avatar_info(ErlNifEnv* env, std::string avatar_path) {
     // Input validation
-    if (!avatar_path || strlen(avatar_path) == 0) {
-        return load_avatar_info_result_error(env, "Invalid avatar path");
+    if (avatar_path.empty()) {
+        return error(env, "Invalid avatar path");
     }
 
     try {
         // Load avatar mesh using simple OBJ reader
         SimpleMesh mesh;
-        if (!mesh.load_obj(std::string(avatar_path))) {
-            return load_avatar_info_result_error(env, "Failed to read avatar mesh file");
+        if (!mesh.load_obj(avatar_path)) {
+            return error(env, "Failed to read avatar mesh file");
         }
 
         // Calculate mesh statistics
@@ -707,13 +715,24 @@ UNIFEX_TERM load_avatar_info(UnifexEnv* env, char* avatar_path) {
         info_json["bounding_box"]["size"] = {bbox_size.x, bbox_size.y, bbox_size.z};
         info_json["mesh_type"] = "avatar";
         info_json["is_likely_avatar"] = is_likely_avatar;
-        info_json["file_path"] = std::string(avatar_path);
+        info_json["file_path"] = avatar_path;
 
         std::string info_str = info_json.dump();
-        return load_avatar_info_result_ok(env, info_str.c_str());
+        return ok_string(env, info_str);
 
     } catch (const std::exception& e) {
         std::string error_msg = "Error loading avatar info: " + std::string(e.what());
-        return load_avatar_info_result_error(env, error_msg.c_str());
+        return error(env, error_msg);
     }
 }
+
+// NIF registration (Fine). Arity is derived automatically; the second argument
+// is the scheduling flag. The solver is long-running and CPU-bound, so it runs
+// on a dirty scheduler to avoid blocking the BEAM.
+FINE_NIF(simulate, ERL_NIF_DIRTY_JOB_CPU_BOUND);
+FINE_NIF(validate_garment_mesh, 0);
+FINE_NIF(validate_avatar_mesh, 0);
+FINE_NIF(load_garment_info, 0);
+FINE_NIF(load_avatar_info, 0);
+
+FINE_INIT("Elixir.PolyFem");
