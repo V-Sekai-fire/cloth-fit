@@ -2,6 +2,7 @@
 
 // PolyFEM includes
 #include <polyfem/garment/optimize.hpp>
+#include <polyfem/garment/coordinate_system.hpp>
 #include <polyfem/solver/GarmentNLProblem.hpp>
 #include <polyfem/solver/forms/ContactForm.hpp>
 #include <polyfem/solver/forms/garment_forms/GarmentForm.hpp>
@@ -243,6 +244,31 @@ fine::Term simulate(ErlNifEnv* env, std::string config, std::string output_path)
         // Load meshes and prepare simulation
         gstate.read_meshes(avatar_mesh_path, source_skeleton_path, target_skeleton_path, avatar_skin_weights_path);
         gstate.load_garment_mesh(garment_mesh_path, args["no_fit_spec_path"]);
+
+        // Normalize inputs from their declared authoring convention into the
+        // canonical Godot frame (+Y up, +Z front, right-handed). Everything
+        // downstream — solve, collision, and USD/OBJ output — is then Godot/
+        // glTF-ready. Default input convention is Blender (+Z up, -Y front, RH);
+        // override via setup.json "input_coordinate_system".
+        {
+            const polyfem::garment::Convention input_cs = polyfem::garment::parse_convention(
+                args.contains("input_coordinate_system") ? args["input_coordinate_system"] : json::object(),
+                polyfem::garment::blender_default());
+            const Eigen::Matrix3d M = polyfem::garment::to_canonical(input_cs);
+            if (!M.isIdentity(1e-9)) {
+                polyfem::garment::apply_to_rows(M, gstate.avatar_v);
+                polyfem::garment::apply_to_rows(M, gstate.garment.v);
+                polyfem::garment::apply_to_rows(M, gstate.skeleton_v);
+                polyfem::garment::apply_to_rows(M, gstate.target_skeleton_v);
+                polyfem::garment::apply_to_normals(M, gstate.avatar_VN);
+                if (M.determinant() < 0) {
+                    // Handedness flip: reverse winding so normals stay outward.
+                    polyfem::garment::flip_winding(gstate.avatar_f);
+                    polyfem::garment::flip_winding(gstate.garment.f);
+                }
+            }
+        }
+
         gstate.normalize_meshes();
         gstate.project_avatar_to_skeleton();
 
@@ -598,11 +624,19 @@ fine::Term validate_avatar_mesh(ErlNifEnv* env, std::string mesh_path) {
             validation_errors += "Mesh has zero or near-zero dimensions. ";
         }
 
-        // Check for reasonable aspect ratios (relaxed for various avatar types)
-        double height_to_width = bbox_size.y / std::max(bbox_size.x, bbox_size.z);
+        // Proportion sanity check against the default input convention (Blender
+        // Z-up): a humanoid's up axis should be its tallest extent. Checking the
+        // declared up axis (not a hard-coded Y) avoids rejecting Z-up assets that
+        // retarget fine, while still catching meshes authored in the wrong frame.
+        // See src/polyfem/garment/coordinate_system.hpp.
+        const double ext[3] = {bbox_size.x, bbox_size.y, bbox_size.z};
+        const int up = polyfem::garment::up_axis_index(polyfem::garment::blender_default());
+        const double up_extent = ext[up];
+        const double max_horizontal = std::max(ext[(up + 1) % 3], ext[(up + 2) % 3]);
+        const double height_to_width = up_extent / std::max(max_horizontal, 1e-9);
         if (height_to_width < 0.2 || height_to_width > 20.0) {
             is_valid = false;
-            validation_errors += "Extreme aspect ratio for avatar mesh. ";
+            validation_errors += "Extreme aspect ratio for avatar mesh (the up axis is not the tallest extent — is the mesh in the declared input convention?). ";
         }
 
         // Check for degenerate faces
