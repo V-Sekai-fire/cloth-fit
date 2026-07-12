@@ -15,6 +15,9 @@
 #include <polyfem/mesh/MeshUtils.hpp>
 #include <polyfem/io/OBJWriter.hpp>
 #include <polyfem/io/MatrixIO.hpp>
+#ifdef POLYFEM_WITH_USD
+#include "loader.hpp" // dlopen the cloth_fit_usd bridge (src/usd_bridge)
+#endif
 
 #include <igl/edges.h>
 #include <igl/read_triangle_mesh.h>
@@ -211,6 +214,9 @@ fine::Term simulate(ErlNifEnv* env, std::string config, std::string output_path)
         GarmentSolver gstate;
         gstate.out_folder = output_dir;
         gstate.out_format = args.value("/output/format"_json_pointer, std::string("obj"));
+#ifdef POLYFEM_WITH_USD
+        cfusd_loader::load_from_env(); // dlopen the USD bridge (no-op if already loaded)
+#endif
 
         // Extract paths from configuration
         const std::string avatar_mesh_path = args["avatar_mesh_path"];

@@ -9,17 +9,7 @@ set(test_sources
   test_mesh.cpp
 )
 
-if(POLYFEM_WITH_USD)
-  list(APPEND test_sources test_usd_io.cpp)
-endif()
-
 add_executable(unit_tests ${test_sources})
-
-# Find libusd_ms + its shared TBB at run time, and register the USD plugin tree
-# (backstop to the path compiled into polyfem) for ctest invocations.
-if(POLYFEM_WITH_USD)
-  set_property(TARGET unit_tests APPEND PROPERTY BUILD_RPATH "${POLYFEM_USD_ROOT}/lib")
-endif()
 # set_property(TARGET unit_tests PROPERTY COMPILE_WARNING_AS_ERROR ON)
 
 ################################################################################
@@ -53,6 +43,17 @@ include(Catch)
 # Register tests
 set(PARSE_CATCH_TESTS_ADD_TO_CONFIGURE_DEPENDS ON)
 catch_discover_tests(unit_tests)
+
+# USD bridge smoke test — a SEPARATE executable that links only the cloth_fit_usd
+# bridge (like the standalone CLI), NOT PolyFEM, so it exercises the bridge's
+# usd_ms + its TBB in isolation. rpath the bridge build dir + the usd lib.
+if(POLYFEM_WITH_USD)
+  add_executable(cfusd_smoke test_usd_io.cpp)
+  target_link_libraries(cfusd_smoke PRIVATE cloth_fit_usd Catch2::Catch2WithMain)
+  target_include_directories(cfusd_smoke PRIVATE "${PROJECT_SOURCE_DIR}/src/usd_bridge")
+  set_property(TARGET cfusd_smoke APPEND PROPERTY BUILD_RPATH "${POLYFEM_USD_ROOT}/lib")
+  catch_discover_tests(cfusd_smoke)
+endif()
 
 ################################################################################
 # CUDA

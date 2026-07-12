@@ -5,8 +5,8 @@
 #include <polyfem/io/OBJReader.hpp>
 #include <polyfem/io/OBJWriter.hpp>
 #ifdef POLYFEM_WITH_USD
-#include <polyfem/io/USDReader.hpp>
-#include <polyfem/io/USDWriter.hpp>
+// C ABI only — the bridge (dlopen'd at runtime) is the sole unit that links USD.
+#include <cloth_fit_usd.h>
 #endif
 #include <polyfem/io/MatrixIO.hpp>
 #include <polyfem/mesh/MeshUtils.hpp>
@@ -635,12 +635,223 @@ namespace polyfem {
                has_suffix_ci(p, ".usdc") || has_suffix_ci(p, ".usdz");
     }
 
+#ifdef POLYFEM_WITH_USD
+    // Marshal an OBJData across the C ABI into a bridge mesh handle (for writing).
+    static cfusd_mesh_t *obj_to_cfusd(const OBJData &d)
+    {
+        cfusd_mesh_t *m = cfusd_mesh_create();
+
+        std::vector<double> xyz(d.V.size() * 3, 0.0);
+        for (size_t i = 0; i < d.V.size(); ++i)
+        {
+            for (int c = 0; c < 3 && c < (int)d.V[i].size(); ++c)
+            {
+                xyz[3 * i + c] = d.V[i][c];
+            }
+        }
+        cfusd_mesh_set_positions(m, (int32_t)d.V.size(), xyz.data());
+
+        std::vector<int32_t> counts(d.F.size());
+        std::vector<int32_t> idx;
+        for (size_t f = 0; f < d.F.size(); ++f)
+        {
+            counts[f] = (int32_t)d.F[f].size();
+            for (int v : d.F[f])
+            {
+                idx.push_back(v);
+            }
+        }
+        cfusd_mesh_set_faces(m, (int32_t)d.F.size(), counts.data(), (int32_t)idx.size(), idx.data());
+
+        if (!d.VT.empty())
+        {
+            std::vector<double> uv(d.VT.size() * 2, 0.0);
+            for (size_t i = 0; i < d.VT.size(); ++i)
+            {
+                for (int c = 0; c < 2 && c < (int)d.VT[i].size(); ++c)
+                {
+                    uv[2 * i + c] = d.VT[i][c];
+                }
+            }
+            std::vector<int32_t> fti;
+            for (const auto &face : d.FT)
+            {
+                for (int v : face)
+                {
+                    fti.push_back(v);
+                }
+            }
+            cfusd_mesh_set_uvs(m, (int32_t)d.VT.size(), uv.data(), (int32_t)fti.size(), fti.data());
+        }
+
+        if (!d.VN.empty())
+        {
+            std::vector<double> nrm(d.VN.size() * 3, 0.0);
+            for (size_t i = 0; i < d.VN.size(); ++i)
+            {
+                for (int c = 0; c < 3 && c < (int)d.VN[i].size(); ++c)
+                {
+                    nrm[3 * i + c] = d.VN[i][c];
+                }
+            }
+            std::vector<int32_t> fni;
+            for (const auto &face : d.FN)
+            {
+                for (int v : face)
+                {
+                    fni.push_back(v);
+                }
+            }
+            cfusd_mesh_set_normals(m, (int32_t)d.VN.size(), nrm.data(), (int32_t)fni.size(), fni.data());
+        }
+
+        if (!d.mtl_filename.empty())
+        {
+            cfusd_mesh_set_mtl_filename(m, d.mtl_filename.c_str());
+        }
+
+        for (const auto &obj : d.objects)
+        {
+            for (const auto &g : obj.groups)
+            {
+                std::vector<int32_t> fi(g.face_indices.begin(), g.face_indices.end());
+                cfusd_mesh_add_group(m, obj.name.c_str(), g.name.c_str(),
+                                     g.material_name.c_str(), (int32_t)fi.size(), fi.data());
+            }
+        }
+        return m;
+    }
+
+    // Marshal a bridge mesh handle back into an OBJData (for reading).
+    static void cfusd_to_obj(const cfusd_mesh_t *m, OBJData &d)
+    {
+        d = OBJData();
+
+        const int32_t vc = cfusd_mesh_get_vertex_count(m);
+        std::vector<double> xyz(vc * 3);
+        cfusd_mesh_get_positions(m, xyz.data());
+        d.V.resize(vc);
+        for (int32_t i = 0; i < vc; ++i)
+        {
+            d.V[i] = {xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+        }
+
+        const int32_t fc = cfusd_mesh_get_face_count(m);
+        const int32_t ic = cfusd_mesh_get_index_count(m);
+        std::vector<int32_t> counts(fc), idx(ic);
+        cfusd_mesh_get_faces(m, counts.data(), idx.data());
+        d.F.resize(fc);
+        int k = 0;
+        for (int32_t f = 0; f < fc; ++f)
+        {
+            d.F[f].assign(idx.begin() + k, idx.begin() + k + counts[f]);
+            k += counts[f];
+        }
+
+        const int32_t uvc = cfusd_mesh_get_uv_count(m);
+        if (uvc > 0)
+        {
+            std::vector<double> uv(uvc * 2);
+            std::vector<int32_t> fti(ic);
+            cfusd_mesh_get_uvs(m, uv.data(), fti.data());
+            d.VT.resize(uvc);
+            for (int32_t i = 0; i < uvc; ++i)
+            {
+                d.VT[i] = {uv[2 * i], uv[2 * i + 1]};
+            }
+            d.FT.resize(fc);
+            k = 0;
+            for (int32_t f = 0; f < fc; ++f)
+            {
+                d.FT[f].assign(fti.begin() + k, fti.begin() + k + counts[f]);
+                k += counts[f];
+            }
+        }
+
+        const int32_t nc = cfusd_mesh_get_normal_count(m);
+        if (nc > 0)
+        {
+            std::vector<double> nrm(nc * 3);
+            std::vector<int32_t> fni(ic);
+            cfusd_mesh_get_normals(m, nrm.data(), fni.data());
+            d.VN.resize(nc);
+            for (int32_t i = 0; i < nc; ++i)
+            {
+                d.VN[i] = {nrm[3 * i], nrm[3 * i + 1], nrm[3 * i + 2]};
+            }
+            d.FN.resize(fc);
+            k = 0;
+            for (int32_t f = 0; f < fc; ++f)
+            {
+                d.FN[f].assign(fni.begin() + k, fni.begin() + k + counts[f]);
+                k += counts[f];
+            }
+        }
+
+        char mtl[1024] = {0};
+        cfusd_mesh_get_mtl_filename(m, mtl, (int32_t)sizeof(mtl));
+        d.mtl_filename = mtl;
+
+        const int32_t gc = cfusd_mesh_get_group_count(m);
+        for (int32_t g = 0; g < gc; ++g)
+        {
+            char obj[512] = {0}, grp[512] = {0}, mat[512] = {0};
+            cfusd_mesh_get_group_names(m, g, obj, 512, grp, 512, mat, 512);
+            const int32_t gfc = cfusd_mesh_get_group_face_count(m, g);
+            std::vector<int32_t> gf(gfc);
+            cfusd_mesh_get_group_faces(m, g, gf.data());
+
+            OBJObject *o = nullptr;
+            if (!d.objects.empty() && d.objects.back().name == obj)
+            {
+                o = &d.objects.back();
+            }
+            else
+            {
+                OBJObject no;
+                no.name = obj;
+                d.objects.push_back(no);
+                o = &d.objects.back();
+            }
+            OBJGroup group;
+            group.name = grp;
+            group.material_name = mat;
+            group.face_indices.assign(gf.begin(), gf.end());
+            o->groups.push_back(group);
+        }
+
+        d.face_to_object.assign(d.F.size(), -1);
+        d.face_to_group.assign(d.F.size(), -1);
+        for (size_t oi = 0; oi < d.objects.size(); ++oi)
+        {
+            for (size_t gi = 0; gi < d.objects[oi].groups.size(); ++gi)
+            {
+                for (int fidx : d.objects[oi].groups[gi].face_indices)
+                {
+                    if (fidx >= 0 && fidx < (int)d.F.size())
+                    {
+                        d.face_to_object[fidx] = (int)oi;
+                        d.face_to_group[fidx] = (int)gi;
+                    }
+                }
+            }
+        }
+    }
+#endif // POLYFEM_WITH_USD
+
     bool read_mesh_with_groups(const std::string &path, OBJData &data)
     {
 #ifdef POLYFEM_WITH_USD
         if (is_usd_path(path))
         {
-            return io::USDReader::read_with_groups(path, data);
+            cfusd_mesh_t *m = cfusd_read_usd(path.c_str());
+            if (m == nullptr)
+            {
+                return false;
+            }
+            cfusd_to_obj(m, data);
+            cfusd_mesh_destroy(m);
+            return true;
         }
 #endif
         return io::OBJReader::read_with_groups(path, data);
@@ -652,7 +863,10 @@ namespace polyfem {
 #ifdef POLYFEM_WITH_USD
         if (format == "usd")
         {
-            return io::USDWriter::write_with_groups(base + ".usda", data);
+            cfusd_mesh_t *m = obj_to_cfusd(data);
+            const bool ok = cfusd_write_usd(m, (base + ".usda").c_str()) != 0;
+            cfusd_mesh_destroy(m);
+            return ok;
         }
 #endif
         return io::OBJWriter::write_with_groups(base + ".obj", data);

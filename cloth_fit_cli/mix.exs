@@ -65,30 +65,11 @@ defmodule ClothFitCli.MixProject do
   # Environment passed to the Makefile by elixir_make.
   # FINE_INCLUDE_DIR is required by Fine; ERTS_INCLUDE_DIR is provided by
   # elixir_make automatically, but we surface it here for clarity.
+  # The NIF links libpolyfem + the cloth_fit_usd_stub (via polyfem_link.rsp) and
+  # dlopens the USD bridge at runtime — no usd_ms on its link line — so no USD env
+  # is needed here.
   defp make_env do
-    base = %{"FINE_INCLUDE_DIR" => Fine.include_dir()}
-
-    # OpenUSD I/O in the NIF is opt-in via CLOTH_FIT_WITH_USD (Linux/macOS), matching
-    # `mix cloth_fit.build_native`; surface usd_ms + the shared oneTBB dirs so an
-    # incremental `mix compile` rebuild links them the same way. Off by default.
-    usd? = System.get_env("CLOTH_FIT_WITH_USD") in ~w(1 true)
-
-    case :os.type() do
-      {:win32, _} ->
-        base
-
-      _ when usd? ->
-        tbb_lib = Path.expand("../build-deps/tbb-install/lib", __DIR__)
-
-        Map.merge(base, %{
-          "USD_INCLUDE_DIR" => StageRuntime.include_dir(),
-          "USD_LIB_DIR" => StageRuntime.lib_dir(),
-          "TBB_LIB_DIR" => tbb_lib
-        })
-
-      _ ->
-        base
-    end
+    %{"FINE_INCLUDE_DIR" => Fine.include_dir()}
   end
 
   # Run "mix help compile.app" to learn about applications.

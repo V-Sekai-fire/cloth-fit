@@ -21,6 +21,9 @@
 #include <polyfem/utils/Logger.hpp>
 #include <polyfem/mesh/MeshUtils.hpp>
 #include <polyfem/garment/optimize.hpp>
+#ifdef POLYFEM_WITH_USD
+#include "loader.hpp"
+#endif
 
 #include <fstream>
 
@@ -146,6 +149,9 @@ int main(int argc, char **argv)
 
 	gstate.out_folder = out_folder;
 	gstate.out_format = in_args.value("/output/format"_json_pointer, std::string("obj"));
+#ifdef POLYFEM_WITH_USD
+	cfusd_loader::load_from_env(); // dlopen the USD bridge (no-op if already loaded)
+#endif
 
 	gstate.read_meshes(avatar_mesh_path, source_skeleton_path, target_skeleton_path, avatar_skin_weights_path);
 	gstate.load_garment_mesh(in_args["garment_mesh_path"], in_args["no_fit_spec_path"]);

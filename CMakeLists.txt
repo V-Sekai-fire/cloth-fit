@@ -237,42 +237,81 @@ target_link_libraries(polyfem PUBLIC spdlog::spdlog)
 include(jse)
 target_link_libraries(polyfem PUBLIC jse::jse)
 
-# OpenUSD (optional): lossless USD mesh I/O via the prebuilt monolithic usd_ms.
+# OpenUSD (optional): a C-ABI bridge dlopen'd at runtime, NOT linked into PolyFEM.
 #
-# Wired manually rather than via find_package(pxr): pxrConfig.cmake always
-# defines a TBB::tbb imported target, which would collide with PolyFEM's own
-# TBB::tbb. The monolithic usd_ms exports all of pxr and the archive bundles its
-# own tbb/oneapi headers, so a bare include dir + link is self-contained.
+# The cloth_fit_usd bridge (SHARED) is the ONLY unit that links usd_ms; it exports
+# only its extern "C" CFUSD_API surface (everything pxr/TBB hidden). generate_stubs
+# turns cloth_fit_usd.sigs into a dlsym dispatch table; libpolyfem calls the weak
+# cfusd_* symbols and consumers dlopen the bridge at runtime -> zero USD/TBB on the
+# NIF's link line, no ABI coupling, no shared-TBB gymnastics (PolyFEM keeps static
+# TBB; the bridge isolates USD's TBB in its own DLL).
 if(POLYFEM_WITH_USD)
     if(NOT POLYFEM_USD_ROOT)
         message(FATAL_ERROR "POLYFEM_WITH_USD=ON requires -DPOLYFEM_USD_ROOT=<openusd tree>")
     endif()
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     find_library(POLYFEM_USD_MS_LIB
         NAMES usd_ms libusd_ms
         PATHS "${POLYFEM_USD_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
 
-    # USDReader/USDWriter include third-party OpenUSD headers, which do not
-    # satisfy PolyFEM's strict -Werror set (e.g. -Werror=non-virtual-dtor on Sdf
-    # value types). Build them in their own library that does NOT link
-    # polyfem::warnings, then link it into polyfem. The pxr headers (and the
-    # bundled tbb/oneapi headers they pull in) stay private to this library.
-    add_library(polyfem_usd STATIC
+    set(CFUSD_DIR "${PROJECT_SOURCE_DIR}/src/usd_bridge")
+
+    # 1. The bridge — the only unit that links usd_ms. Exports only CFUSD_API.
+    add_library(cloth_fit_usd SHARED
+        "${CFUSD_DIR}/cloth_fit_usd.cpp"
         "${POLYFEM_SOURCE_DIR}/io/USDReader.cpp"
         "${POLYFEM_SOURCE_DIR}/io/USDWriter.cpp")
-    target_compile_features(polyfem_usd PUBLIC cxx_std_17)
-    set_target_properties(polyfem_usd PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    target_include_directories(polyfem_usd
-        PUBLIC "${POLYFEM_INCLUDE_DIR}"
-        PRIVATE "${POLYFEM_USD_ROOT}/include")
-    target_compile_definitions(polyfem_usd
-        PRIVATE POLYFEM_WITH_USD POLYFEM_USD_PLUGIN_PATH="${POLYFEM_USD_ROOT}/lib/usd")
-    target_link_libraries(polyfem_usd PUBLIC "${POLYFEM_USD_MS_LIB}")
-    # so binaries linking polyfem find libusd_ms + its shared TBB at run time
-    set_property(TARGET polyfem_usd APPEND PROPERTY BUILD_RPATH "${POLYFEM_USD_ROOT}/lib")
+    target_compile_features(cloth_fit_usd PRIVATE cxx_std_17)
+    set_target_properties(cloth_fit_usd PROPERTIES
+        CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON
+        POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(cloth_fit_usd PRIVATE
+        "${POLYFEM_INCLUDE_DIR}" "${CFUSD_DIR}" "${POLYFEM_USD_ROOT}/include")
+    # CFUSD_BUILDING_DLL is set inside cloth_fit_usd.cpp itself.
+    target_compile_definitions(cloth_fit_usd PRIVATE
+        POLYFEM_WITH_USD
+        POLYFEM_USD_PLUGIN_PATH="${POLYFEM_USD_ROOT}/lib/usd")
+    target_link_libraries(cloth_fit_usd PRIVATE "${POLYFEM_USD_MS_LIB}")
+    # Find usd_ms both at the build-time usd tree and next to the bridge once it is
+    # bundled into priv/ (relocatable).
+    if(APPLE)
+        set(CFUSD_ORIGIN "@loader_path")
+    else()
+        set(CFUSD_ORIGIN "$ORIGIN")
+    endif()
+    set_property(TARGET cloth_fit_usd APPEND PROPERTY
+        BUILD_RPATH "${POLYFEM_USD_ROOT}/lib;${CFUSD_ORIGIN}")
 
-    target_link_libraries(polyfem PUBLIC polyfem_usd)
+    # 2. Generate the dlopen stubs (POSIX dlsym table) from the .sigs.
+    set(CFUSD_GEN "${CMAKE_BINARY_DIR}/usd_bridge_generated")
+    add_custom_command(
+        OUTPUT "${CFUSD_GEN}/cloth_fit_usd_stubs.cc" "${CFUSD_GEN}/cfusd/cloth_fit_usd_stubs.h"
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CFUSD_GEN}/cfusd"
+        COMMAND ${Python3_EXECUTABLE}
+                "${PROJECT_SOURCE_DIR}/thirdparty/generate_stubs/generate_stubs.py"
+                -o "${CFUSD_GEN}" -i "${CFUSD_GEN}" -t posix_stubs
+                -s cloth_fit_usd_stubs -p cfusd -l "(::std::cerr)" -n iostream
+                --macro-include "${CFUSD_DIR}/stubgen_compat.h"
+                "${CFUSD_DIR}/cloth_fit_usd.sigs"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${CFUSD_GEN}/cloth_fit_usd_stubs.h" "${CFUSD_GEN}/cfusd/cloth_fit_usd_stubs.h"
+        DEPENDS "${CFUSD_DIR}/cloth_fit_usd.sigs" "${CFUSD_DIR}/stubgen_compat.h"
+        COMMENT "Generating cloth_fit_usd dlopen stubs")
+
+    # 3. The stub static lib consumers link: weak cfusd_* forwarders + the loader.
+    add_library(cloth_fit_usd_stub STATIC
+        "${CFUSD_GEN}/cloth_fit_usd_stubs.cc"
+        "${CFUSD_DIR}/loader.cpp")
+    target_include_directories(cloth_fit_usd_stub PUBLIC "${CFUSD_GEN}" "${CFUSD_DIR}")
+    set_target_properties(cloth_fit_usd_stub PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    # the dlsym table + loader dlopen the bridge -> consumers need libdl
+    target_link_libraries(cloth_fit_usd_stub PUBLIC ${CMAKE_DL_LIBS})
+
+    # 4. libpolyfem calls the C ABI (no usd_ms); consumers get the stub transitively.
+    target_include_directories(polyfem PUBLIC "${CFUSD_DIR}")
     target_compile_definitions(polyfem PUBLIC POLYFEM_WITH_USD)
-    message(STATUS "PolyFEM: OpenUSD mesh I/O enabled (${POLYFEM_USD_MS_LIB})")
+    target_link_libraries(polyfem PUBLIC cloth_fit_usd_stub)
+    message(STATUS "PolyFEM: OpenUSD via dlopen bridge (${POLYFEM_USD_MS_LIB})")
 endif()
 
 ################################################################################
