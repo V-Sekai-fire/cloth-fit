@@ -1,7 +1,5 @@
 set(SOURCES
 	ALSolver.hpp
-	GarmentNLProblem.cpp
-	GarmentNLProblem.hpp
 	FullNLProblem.cpp
 	FullNLProblem.hpp
 )
