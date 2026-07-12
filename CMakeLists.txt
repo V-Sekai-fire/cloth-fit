@@ -290,7 +290,7 @@ if(POLYFEM_WITH_USD)
         COMMAND ${Python3_EXECUTABLE}
                 "${PROJECT_SOURCE_DIR}/thirdparty/generate_stubs/generate_stubs.py"
                 -o "${CFUSD_GEN}" -i "${CFUSD_GEN}" -t posix_stubs
-                -s cloth_fit_usd_stubs -p cfusd -l "(::std::cerr)" -n iostream
+                -s cloth_fit_usd_stubs -p cfusd -l "std::cerr" -n iostream
                 --macro-include "${CFUSD_DIR}/stubgen_compat.h"
                 "${CFUSD_DIR}/cloth_fit_usd.sigs"
         COMMAND ${CMAKE_COMMAND} -E copy
