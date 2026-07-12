@@ -8,6 +8,7 @@
 #  define WIN32_LEAN_AND_MEAN
 #  include <windows.h>
 #else
+#  include <dlfcn.h>
 #  include "cfusd/cloth_fit_usd_stubs.h" // generated POSIX dlsym table (cfusd::)
 #endif
 
@@ -50,10 +51,40 @@ namespace cfusd_loader
         return g_loaded;
     }
 
+    // Resolve the bridge lib sitting next to the consumer module (the NIF / binary
+    // that links this stub) via dladdr, so no CFUSD_BRIDGE env handoff is needed.
+    static std::string bridge_next_to_self()
+    {
+#ifndef _WIN32
+        Dl_info info;
+        if (dladdr(reinterpret_cast<void *>(&load), &info) != 0 && info.dli_fname != nullptr)
+        {
+            std::string self = info.dli_fname;
+            const auto slash = self.find_last_of('/');
+            const std::string dir = (slash == std::string::npos) ? std::string(".") : self.substr(0, slash);
+#  ifdef __APPLE__
+            return dir + "/libcloth_fit_usd.dylib";
+#  else
+            return dir + "/libcloth_fit_usd.so";
+#  endif
+        }
+#endif
+        return "";
+    }
+
     bool load_from_env()
     {
-        const char *bridge = std::getenv("CFUSD_BRIDGE");
-        if (!load(bridge != nullptr ? bridge : ""))
+        std::string bridge;
+        const char *env = std::getenv("CFUSD_BRIDGE");
+        if (env != nullptr && env[0] != '\0')
+        {
+            bridge = env;
+        }
+        else
+        {
+            bridge = bridge_next_to_self();
+        }
+        if (!load(bridge))
         {
             return false;
         }
