@@ -82,6 +82,10 @@ defmodule ClothFitCli.MixProject do
     [
       {:fine, "~> 0.1", runtime: false},
       {:elixir_make, "~> 0.8", runtime: false},
+      # Prebuilt OpenUSD runtime (monolithic usd_ms + headers), fetched per
+      # triplet from Hex instead of compiling USD from source (~40+ min). The NIF
+      # links against StageRuntime.include_dir/0 and lib_dir/0.
+      {:stage_runtime, "~> 0.1.0-dev"},
       {:burrito, "~> 1.3"},
       {:jason, "~> 1.4"},
       {:igniter, "~> 0.6", only: [:dev, :test]}
