@@ -31,7 +31,9 @@ else
 	ifeq ($(UNAME_S),Darwin)
 		NIF_EXT = so
 		SO_FLAGS = -dynamiclib -undefined dynamic_lookup
-		SYS_LIBS = -lstdc++ -lm -lpthread -ldl
+		# macOS uses libc++ (system library, present everywhere); dlopen lives in
+		# libSystem so there is no separate -ldl.
+		SYS_LIBS = -lc++ -lm -lpthread
 	else
 		NIF_EXT = so
 		SO_FLAGS = -shared -fPIC
@@ -50,13 +52,24 @@ POLYFEM_LINK_RSP = c_src/polyfem_link.rsp
 CXX ?= g++
 CXXFLAGS += -std=c++17 -O2 -fvisibility=hidden -fPIC
 
+# OpenUSD: when the build task exports USD_LIB_DIR (Linux/macOS only; disabled on
+# mingw Windows), libpolyfem contains USDReader/USDWriter which reference pxr
+# symbols, so the NIF must also link the shared usd_ms and rpath its dir (which
+# also holds libusd_ms's shared TBB). The pxr headers themselves are only needed
+# inside libpolyfem, not by the NIF TU, so no -I is required here.
+ifneq ($(USD_LIB_DIR),)
+	USD_LINK = -L"$(USD_LIB_DIR)" -lusd_ms -Wl,-rpath,"$(USD_LIB_DIR)"
+else
+	USD_LINK =
+endif
+
 .PHONY: all clean
 all: $(NIF)
 
 $(NIF): $(SRC) $(POLYFEM_DEFINES_RSP) $(POLYFEM_LINK_RSP) | $(PRIV_DIR)
 	$(CXX) $(CXXFLAGS) -I"$(FINE_INCLUDE_DIR)" -I"$(ERTS_INCLUDE_DIR)" \
 		@$(POLYFEM_INCLUDES_RSP) @$(POLYFEM_DEFINES_RSP) $(SO_FLAGS) -o $@ $(SRC) \
-		@$(POLYFEM_LINK_RSP) $(SYS_LIBS)
+		@$(POLYFEM_LINK_RSP) $(USD_LINK) $(SYS_LIBS)
 
 $(PRIV_DIR):
 	mkdir -p $(PRIV_DIR)
