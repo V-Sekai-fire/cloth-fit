@@ -44,16 +44,68 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
     tc = toolchain()
     Mix.shell().info("Toolchain: #{inspect(tc)}")
 
+    usd = usd_config(tc)
+
+    # PolyFEM keeps its STATIC oneTBB. With USD the CMake also builds the
+    # cloth_fit_usd bridge (which links usd_ms) + the dlopen stub lib; the NIF
+    # links only the stub (no usd_ms, no shared-TBB), and dlopens the bridge — so
+    # the bridge isolates USD's TBB from PolyFEM's (no double-instance abort).
     build_tbb(tc, repo_root, deps_dir, tbb_install, jobs)
-    configure_polyfem(tc, repo_root, build_dir, tbb_install)
+    configure_polyfem(tc, repo_root, build_dir, tbb_install, usd)
     build(build_dir, "polyfem", jobs)
+    # The bridge (cloth_fit_usd) is not a link dependency of polyfem, so build it
+    # explicitly; polyfem already pulls in the cloth_fit_usd_stub it links.
+    if usd, do: build(build_dir, "cloth_fit_usd", jobs)
 
     gen_defines(build_dir, Path.join(cli_root, "c_src/polyfem_defines.rsp"))
-    gen_link(build_dir, tbb_install, Path.join(cli_root, "c_src/polyfem_link.rsp"))
+    gen_link(build_dir, tbb_install, usd, Path.join(cli_root, "c_src/polyfem_link.rsp"))
 
     build_nif(cli_root, tc)
+    if usd, do: bundle_runtime_libs(cli_root, build_dir, usd)
 
     Mix.shell().info("Done. NIF built at priv/polyfem.*")
+  end
+
+  # OpenUSD I/O in the NIF is opt-in via CLOTH_FIT_WITH_USD until the Burrito
+  # bundling is wired (PR 2); default builds (incl. nif.yml/Burrito) stay USD-free.
+  # It is ABI-matched to PolyFEM's compiler on Linux (gcc) / macOS (clang); the
+  # Windows llvm-mingw build needs the x86_64-windows-gnu triplet + bundling.
+  defp usd_config(%{os: :windows}), do: nil
+
+  defp usd_config(_tc) do
+    if System.get_env("CLOTH_FIT_WITH_USD") in ~w(1 true) do
+      root = StageRuntime.root()
+      Mix.shell().info("==> OpenUSD I/O enabled: #{root}")
+      %{root: root, include: StageRuntime.include_dir(), lib: StageRuntime.lib_dir()}
+    else
+      nil
+    end
+  end
+
+  defp usd_flags(nil), do: []
+  defp usd_flags(%{root: root}), do: ["-DPOLYFEM_WITH_USD=ON", "-DPOLYFEM_USD_ROOT=#{root}"]
+
+  # Copy the bridge (cloth_fit_usd) + its runtime deps (usd_ms + oneTBB, shipped in
+  # the usd archive lib/) next to the NIF, so the NIF dlopens a self-contained
+  # bridge. The Elixir side points CFUSD_BRIDGE/CFUSD_PLUGIN_DIR at priv/ + the
+  # usd plugin tree.
+  defp bundle_runtime_libs(cli_root, build_dir, %{lib: usd_lib}) do
+    priv = Path.join(cli_root, "priv")
+    File.mkdir_p!(priv)
+
+    libs =
+      Path.wildcard(Path.join(build_dir, "libcloth_fit_usd.*")) ++
+        Path.wildcard(Path.join(build_dir, "cloth_fit_usd.dll")) ++
+        Path.wildcard(Path.join(usd_lib, "libusd_ms*")) ++
+        Path.wildcard(Path.join(usd_lib, "usd_ms*")) ++
+        Path.wildcard(Path.join(usd_lib, "libtbb*")) ++
+        Path.wildcard(Path.join(usd_lib, "tbb*"))
+
+    for src <- libs, not String.ends_with?(src, ".a"), not String.ends_with?(src, ".dll.a") do
+      File.cp!(src, Path.join(priv, Path.basename(src)))
+    end
+
+    Mix.shell().info("bundled cloth_fit_usd bridge + usd_ms + oneTBB into priv/")
   end
 
   # Build the NIF directly via the Makefile. We invoke make here (rather than
@@ -63,6 +115,8 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
     Mix.shell().info("==> Building NIF")
     make = if tc.os == :windows, do: find!("mingw32-make"), else: find!("make")
 
+    # The NIF links libpolyfem + the cloth_fit_usd_stub (via polyfem_link.rsp) and
+    # dlopens the bridge — no usd_ms/TBB on its link line, so no USD env is needed.
     env = [
       {"FINE_INCLUDE_DIR", Fine.include_dir()},
       {"ERTS_INCLUDE_DIR", erts_include_dir()}
@@ -146,10 +200,10 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
   # --- PolyFEM ---------------------------------------------------------------
 
-  defp configure_polyfem(tc, repo_root, build_dir, tbb_install) do
+  defp configure_polyfem(tc, repo_root, build_dir, tbb_install, usd) do
     Mix.shell().info("==> Configuring PolyFEM")
 
-    cmd("cmake", ["-S", repo_root, "-B", build_dir] ++ gen_flags(tc) ++
+    cmd("cmake", ["-S", repo_root, "-B", build_dir] ++ gen_flags(tc) ++ usd_flags(usd) ++
           ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
            # Emit the polyfem target's include flags into includes_CXX.rsp on
            # every generator (MinGW does this by default, Unix Makefiles inlines
@@ -193,24 +247,27 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
   # Resolve the static libraries actually produced by the build (per-OS names)
   # and write a linker response file wrapped in a group so order does not matter.
-  defp gen_link(build_dir, tbb_install, out) do
+  defp gen_link(build_dir, tbb_install, usd, out) do
     deps = Path.join(build_dir, "_deps")
 
-    rels = [
-      "libpolyfem.a",
-      "_deps/polysolve-build/libpolysolve.a",
-      "_deps/polysolve-build/libpolysolve_linear.a",
-      "_deps/ipc-toolkit-build/libipc_toolkit.a",
-      "_deps/tight-inclusion-build/libtight_inclusion.a",
-      "_deps/scalable-ccd-build/libscalable_ccd.a",
-      "_deps/simplebvh-build/libsimple_bvh.a",
-      "_deps/finite-diff-build/libfinitediff_finitediff.a",
-      "_deps/json-spec-engine-build/libjse.a",
-      "lib/libpredicates.a",
-      "_deps/spdlog-build/libspdlog.a",
-      "_deps/filib-build/libfilib_filib.a",
-      "_deps/openvdb-build/openvdb/openvdb/libopenvdb.a"
-    ]
+    rels =
+      [
+        "libpolyfem.a",
+        "_deps/polysolve-build/libpolysolve.a",
+        "_deps/polysolve-build/libpolysolve_linear.a",
+        "_deps/ipc-toolkit-build/libipc_toolkit.a",
+        "_deps/tight-inclusion-build/libtight_inclusion.a",
+        "_deps/scalable-ccd-build/libscalable_ccd.a",
+        "_deps/simplebvh-build/libsimple_bvh.a",
+        "_deps/finite-diff-build/libfinitediff_finitediff.a",
+        "_deps/json-spec-engine-build/libjse.a",
+        "lib/libpredicates.a",
+        "_deps/spdlog-build/libspdlog.a",
+        "_deps/filib-build/libfilib_filib.a",
+        "_deps/openvdb-build/openvdb/openvdb/libopenvdb.a"
+      ] ++
+        # the USD dlopen stub (weak cfusd_* forwarders + loader) — no usd_ms here
+        if(usd, do: ["libcloth_fit_usd_stub.a"], else: [])
 
     absl =
       [deps, "abseil-cpp-build", "absl"]

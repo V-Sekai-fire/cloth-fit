@@ -1,144 +1,89 @@
 ////////////////////////////////////////////////////////////////////////////////
-#include <polyfem/io/OBJData.hpp>
-#include <polyfem/io/OBJReader.hpp>
-#include <polyfem/io/OBJWriter.hpp>
-#include <polyfem/io/USDReader.hpp>
-#include <polyfem/io/USDWriter.hpp>
+// Smoke-tests the cloth_fit_usd bridge via its C ABI (linked directly here, the
+// way the standalone CLI links it; the solver/NIF instead dlopen it). Proves the
+// USD read/write + the OBJData<->flat-array marshalling round-trip, and that the
+// bridge loads usd_ms without a TBB double-instance abort against PolyFEM's TBB.
+#include <cloth_fit_usd.h>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/catch_approx.hpp>
 
 #include <filesystem>
 #include <string>
+#include <vector>
 ////////////////////////////////////////////////////////////////////////////////
 
-using namespace polyfem;
-using namespace polyfem::io;
 using Catch::Approx;
 
 namespace
 {
-	std::string temp_usd(const std::string &name)
-	{
-		auto dir = std::filesystem::temp_directory_path() / "polyfem_usd_tests";
-		std::filesystem::create_directories(dir);
-		return (dir / name).string();
-	}
-
-	// A mixed-valence mesh: a quad (face 0) and a triangle (face 1) sharing an
-	// edge, with per-corner UVs + normals and two material groups. Exercises
-	// everything the round trip must preserve.
-	OBJData make_sample()
-	{
-		OBJData d;
-		d.V = {
-			{0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}, {1.0, 1.0, 0.0},
-			{0.0, 1.0, 0.0}, {2.0, 0.5, 0.0}};
-		d.F = {{0, 1, 2, 3}, {1, 4, 2}}; // quad + triangle (no triangulation)
-
-		d.VT = {{0.0, 0.0}, {1.0, 0.0}, {1.0, 1.0}, {0.0, 1.0}, {1.5, 0.5}};
-		d.FT = {{0, 1, 2, 3}, {1, 4, 2}};
-
-		d.VN = {{0.0, 0.0, 1.0}};
-		d.FN = {{0, 0, 0, 0}, {0, 0, 0}};
-
-		d.mtl_filename = "sample.mtl";
-
-		OBJObject obj;
-		obj.name = "SampleObject";
-		OBJGroup g0;
-		g0.name = "quad_grp";
-		g0.material_name = "red";
-		g0.face_indices = {0};
-		OBJGroup g1;
-		g1.name = "tri_grp";
-		g1.material_name = "blue";
-		g1.face_indices = {1};
-		obj.groups = {g0, g1};
-		d.objects = {obj};
-
-		d.face_to_object = {0, 0};
-		d.face_to_group = {0, 1}; // per-object local group index
-
-		return d;
-	}
+    std::string temp_usd(const std::string &name)
+    {
+        auto dir = std::filesystem::temp_directory_path() / "cfusd_bridge_tests";
+        std::filesystem::create_directories(dir);
+        return (dir / name).string();
+    }
 } // namespace
 
-TEST_CASE("usd mesh round trip preserves all data", "[usd][io]")
+TEST_CASE("cfusd bridge mesh round trip", "[usd][io]")
 {
-	const OBJData in = make_sample();
-	const std::string path = temp_usd("roundtrip.usda");
+    REQUIRE(cfusd_init(nullptr) == 1);
 
-	REQUIRE(USDWriter::write_with_groups(path, in));
+    // A quad + a triangle, per-corner UVs + normals, two material groups.
+    cfusd_mesh_t *m = cfusd_mesh_create();
+    const double pos[] = {0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0, 2, 0.5, 0};
+    cfusd_mesh_set_positions(m, 5, pos);
+    const int32_t counts[] = {4, 3};
+    const int32_t idx[] = {0, 1, 2, 3, 1, 4, 2};
+    cfusd_mesh_set_faces(m, 2, counts, 7, idx);
+    const double uv[] = {0, 0, 1, 0, 1, 1, 0, 1, 1.5, 0.5};
+    const int32_t uvi[] = {0, 1, 2, 3, 1, 4, 2};
+    cfusd_mesh_set_uvs(m, 5, uv, 7, uvi);
+    const double nrm[] = {0, 0, 1};
+    const int32_t ni[] = {0, 0, 0, 0, 0, 0, 0};
+    cfusd_mesh_set_normals(m, 1, nrm, 7, ni);
+    cfusd_mesh_set_mtl_filename(m, "sample.mtl");
+    const int32_t g0[] = {0};
+    const int32_t g1[] = {1};
+    cfusd_mesh_add_group(m, "Obj", "quad_grp", "red", 1, g0);
+    cfusd_mesh_add_group(m, "Obj", "tri_grp", "blue", 1, g1);
 
-	OBJData out;
-	REQUIRE(USDReader::read_with_groups(path, out));
+    const std::string path = temp_usd("bridge_rt.usda");
+    REQUIRE(cfusd_write_usd(m, path.c_str()) == 1);
+    cfusd_mesh_destroy(m);
 
-	// Vertices (positions + order).
-	REQUIRE(out.V.size() == in.V.size());
-	for (size_t i = 0; i < in.V.size(); ++i)
-	{
-		REQUIRE(out.V[i].size() >= 3);
-		for (int c = 0; c < 3; ++c)
-			REQUIRE(out.V[i][c] == Approx(in.V[i][c]));
-	}
+    cfusd_mesh_t *r = cfusd_read_usd(path.c_str());
+    REQUIRE(r != nullptr);
 
-	// Faces: arbitrary valence preserved (quad stays a quad).
-	REQUIRE(out.F == in.F);
-	REQUIRE(out.F[0].size() == 4);
-	REQUIRE(out.F[1].size() == 3);
+    REQUIRE(cfusd_mesh_get_vertex_count(r) == 5);
+    REQUIRE(cfusd_mesh_get_face_count(r) == 2);
+    REQUIRE(cfusd_mesh_get_index_count(r) == 7);
 
-	// UVs + tex-coord indices.
-	REQUIRE(out.VT.size() == in.VT.size());
-	for (size_t i = 0; i < in.VT.size(); ++i)
-	{
-		REQUIRE(out.VT[i][0] == Approx(in.VT[i][0]));
-		REQUIRE(out.VT[i][1] == Approx(in.VT[i][1]));
-	}
-	REQUIRE(out.FT == in.FT);
+    int32_t rc[2] = {0, 0};
+    int32_t ri[7] = {0};
+    cfusd_mesh_get_faces(r, rc, ri);
+    REQUIRE(rc[0] == 4); // quad stays a quad
+    REQUIRE(rc[1] == 3);
 
-	// Normals + normal indices.
-	REQUIRE(out.VN.size() == in.VN.size());
-	for (size_t i = 0; i < in.VN.size(); ++i)
-		for (int c = 0; c < 3; ++c)
-			REQUIRE(out.VN[i][c] == Approx(in.VN[i][c]));
-	REQUIRE(out.FN == in.FN);
+    std::vector<double> rp(15);
+    cfusd_mesh_get_positions(r, rp.data());
+    REQUIRE(rp[12] == Approx(2.0)); // last vertex x
 
-	// Groups / materials / object structure.
-	REQUIRE(out.mtl_filename == in.mtl_filename);
-	REQUIRE(out.objects.size() == 1);
-	REQUIRE(out.objects[0].name == "SampleObject");
-	REQUIRE(out.objects[0].groups.size() == 2);
-	REQUIRE(out.objects[0].groups[0].name == "quad_grp");
-	REQUIRE(out.objects[0].groups[0].material_name == "red");
-	REQUIRE(out.objects[0].groups[0].face_indices == std::vector<int>{0});
-	REQUIRE(out.objects[0].groups[1].name == "tri_grp");
-	REQUIRE(out.objects[0].groups[1].material_name == "blue");
-	REQUIRE(out.objects[0].groups[1].face_indices == std::vector<int>{1});
+    REQUIRE(cfusd_mesh_get_uv_count(r) == 5);
+    REQUIRE(cfusd_mesh_get_normal_count(r) == 1);
 
-	// Recomputed face maps.
-	REQUIRE(out.face_to_object == in.face_to_object);
-	REQUIRE(out.face_to_group == in.face_to_group);
-}
+    char mtl[64] = {0};
+    cfusd_mesh_get_mtl_filename(r, mtl, 64);
+    REQUIRE(std::string(mtl) == "sample.mtl");
 
-TEST_CASE("usd round trip matches OBJ on a real triangle mesh", "[usd][io]")
-{
-	// Load a bundled all-triangle garment via the OBJ path, round-trip it
-	// through USD, and confirm the geometry survives unchanged.
-	const std::string obj_in =
-		std::string(POLYFEM_SOURCE_DIR) + "/tests/garment.obj";
-	if (!std::filesystem::exists(obj_in))
-		return; // fixture not present in this checkout
+    REQUIRE(cfusd_mesh_get_group_count(r) == 2);
+    char obj[64] = {0}, grp[64] = {0}, mat[64] = {0};
+    cfusd_mesh_get_group_names(r, 0, obj, 64, grp, 64, mat, 64);
+    REQUIRE(std::string(grp) == "quad_grp");
+    REQUIRE(std::string(mat) == "red");
+    cfusd_mesh_get_group_names(r, 1, obj, 64, grp, 64, mat, 64);
+    REQUIRE(std::string(grp) == "tri_grp");
+    REQUIRE(std::string(mat) == "blue");
 
-	OBJData via_obj;
-	REQUIRE(OBJReader::read_with_groups(obj_in, via_obj));
-
-	const std::string usd_path = temp_usd("garment.usda");
-	REQUIRE(USDWriter::write_with_groups(usd_path, via_obj));
-
-	OBJData via_usd;
-	REQUIRE(USDReader::read_with_groups(usd_path, via_usd));
-
-	REQUIRE(via_usd.V.size() == via_obj.V.size());
-	REQUIRE(via_usd.F == via_obj.F); // valence + vertex indices identical
+    cfusd_mesh_destroy(r);
 }

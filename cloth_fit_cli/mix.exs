@@ -65,6 +65,9 @@ defmodule ClothFitCli.MixProject do
   # Environment passed to the Makefile by elixir_make.
   # FINE_INCLUDE_DIR is required by Fine; ERTS_INCLUDE_DIR is provided by
   # elixir_make automatically, but we surface it here for clarity.
+  # The NIF links libpolyfem + the cloth_fit_usd_stub (via polyfem_link.rsp) and
+  # dlopens the USD bridge at runtime — no usd_ms on its link line — so no USD env
+  # is needed here.
   defp make_env do
     %{"FINE_INCLUDE_DIR" => Fine.include_dir()}
   end

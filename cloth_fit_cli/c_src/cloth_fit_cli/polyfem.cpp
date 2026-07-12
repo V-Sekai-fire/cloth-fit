@@ -15,6 +15,9 @@
 #include <polyfem/mesh/MeshUtils.hpp>
 #include <polyfem/io/OBJWriter.hpp>
 #include <polyfem/io/MatrixIO.hpp>
+#ifdef POLYFEM_WITH_USD
+#include "loader.hpp" // dlopen the cloth_fit_usd bridge (src/usd_bridge)
+#endif
 
 #include <igl/edges.h>
 #include <igl/read_triangle_mesh.h>
@@ -210,6 +213,10 @@ fine::Term simulate(ErlNifEnv* env, std::string config, std::string output_path)
         // Create GarmentSolver instance
         GarmentSolver gstate;
         gstate.out_folder = output_dir;
+        gstate.out_format = args.value("/output/format"_json_pointer, std::string("obj"));
+#ifdef POLYFEM_WITH_USD
+        cfusd_loader::load_from_env(); // dlopen the USD bridge (no-op if already loaded)
+#endif
 
         // Extract paths from configuration
         const std::string avatar_mesh_path = args["avatar_mesh_path"];
@@ -239,9 +246,9 @@ fine::Term simulate(ErlNifEnv* env, std::string config, std::string output_path)
         gstate.normalize_meshes();
         gstate.project_avatar_to_skeleton();
 
-        // Save initial meshes
-        igl::write_triangle_mesh(output_dir + "/target_avatar.obj", gstate.avatar_v, gstate.avatar_f);
-        igl::write_triangle_mesh(output_dir + "/projected_avatar.obj", gstate.skinny_avatar_v, gstate.nc_avatar_f);
+        // Save initial meshes (OBJ or USD per out_format)
+        polyfem::write_mesh_with_groups(output_dir + "/target_avatar", gstate.out_format, polyfem::eigen_to_obj_data(gstate.avatar_v, gstate.avatar_f));
+        polyfem::write_mesh_with_groups(output_dir + "/projected_avatar", gstate.out_format, polyfem::eigen_to_obj_data(gstate.skinny_avatar_v, gstate.nc_avatar_f));
         write_edge_mesh(output_dir + "/target_skeleton.obj", gstate.target_skeleton_v, gstate.target_skeleton_b);
         write_edge_mesh(output_dir + "/source_skeleton.obj", gstate.skeleton_v, gstate.skeleton_b);
 

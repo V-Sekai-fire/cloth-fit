@@ -21,6 +21,9 @@
 #include <polyfem/utils/Logger.hpp>
 #include <polyfem/mesh/MeshUtils.hpp>
 #include <polyfem/garment/optimize.hpp>
+#ifdef POLYFEM_WITH_USD
+#include "loader.hpp"
+#endif
 
 #include <fstream>
 
@@ -145,14 +148,18 @@ int main(int argc, char **argv)
 		log_and_throw_error("Invalid target skeleton mesh path: {}", target_skeleton_path);
 
 	gstate.out_folder = out_folder;
+	gstate.out_format = in_args.value("/output/format"_json_pointer, std::string("obj"));
+#ifdef POLYFEM_WITH_USD
+	cfusd_loader::load_from_env(); // dlopen the USD bridge (no-op if already loaded)
+#endif
 
 	gstate.read_meshes(avatar_mesh_path, source_skeleton_path, target_skeleton_path, avatar_skin_weights_path);
 	gstate.load_garment_mesh(in_args["garment_mesh_path"], in_args["no_fit_spec_path"]);
 	gstate.normalize_meshes();
 	gstate.project_avatar_to_skeleton();
 
-	igl::write_triangle_mesh(out_folder + "/target_avatar.obj", gstate.avatar_v, gstate.avatar_f);
-	igl::write_triangle_mesh(out_folder + "/projected_avatar.obj", gstate.skinny_avatar_v, gstate.nc_avatar_f);
+	write_mesh_with_groups(out_folder + "/target_avatar", gstate.out_format, eigen_to_obj_data(gstate.avatar_v, gstate.avatar_f));
+	write_mesh_with_groups(out_folder + "/projected_avatar", gstate.out_format, eigen_to_obj_data(gstate.skinny_avatar_v, gstate.nc_avatar_f));
 	write_edge_mesh(out_folder + "/target_skeleton.obj", gstate.target_skeleton_v, gstate.target_skeleton_b);
 	write_edge_mesh(out_folder + "/source_skeleton.obj", gstate.skeleton_v, gstate.skeleton_b);
 

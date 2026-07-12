@@ -58,13 +58,13 @@
   {
     "pointer": "/avatar_mesh_path",
     "type": "file",
-    "extensions": [".obj"],
+    "extensions": [".obj", ".usd", ".usda", ".usdc"],
     "doc": "The path to the target avatar mesh. The target avatar mesh should be one or multiple closed surfaces, so that it can be converted to a signed distance field by OpenVDB."
   },
   {
     "pointer": "/garment_mesh_path",
     "type": "file",
-    "extensions": [".obj"],
+    "extensions": [".obj", ".usd", ".usda", ".usdc"],
     "doc": "The path to the source garment mesh. The garment mesh should be a connected manifold triangular mesh."
   },
   {
@@ -355,8 +355,15 @@
     "pointer": "/output",
     "default": null,
     "type": "object",
-    "optional": ["directory", "log", "skip_frame"],
+    "optional": ["directory", "log", "skip_frame", "format"],
     "doc": "output settings"
+  },
+  {
+    "pointer": "/output/format",
+    "default": "obj",
+    "type": "string",
+    "options": ["obj", "usd"],
+    "doc": "Output mesh format: \"obj\" (per-step .obj, default) or \"usd\" (per-step .usda). USD requires a build with OpenUSD support."
   },
   {
     "pointer": "/output/directory",
