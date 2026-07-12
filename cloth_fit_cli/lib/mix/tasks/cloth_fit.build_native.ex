@@ -193,9 +193,10 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
   end
 
   defp tbb_lib(tbb_install) do
-    ["libtbb12.a", "libtbb.a"]
-    |> Enum.map(&Path.join([tbb_install, "lib", &1]))
-    |> Enum.find(&File.exists?/1)
+    # oneTBB installs to lib on Debian/Ubuntu but lib64 on Fedora (GNUInstallDirs).
+    (Path.wildcard(Path.join([tbb_install, "lib*", "libtbb12.a"])) ++
+       Path.wildcard(Path.join([tbb_install, "lib*", "libtbb.a"])))
+    |> List.first()
   end
 
   # --- PolyFEM ---------------------------------------------------------------
