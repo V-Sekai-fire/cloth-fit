@@ -11,6 +11,7 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/mesh.h>
+#include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/primvar.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/subset.h>
@@ -49,10 +50,18 @@ namespace polyfem::io
 		if (!stage)
 			return false;
 
+		// cloth-fit solves and writes in the canonical Godot frame: +Y up,
+		// right-handed. Declare it so USD/glTF consumers place the mesh correctly
+		// instead of falling back to an assumed up-axis.
+		UsdGeomSetStageUpAxis(stage, UsdGeomTokens->y);
+
 		UsdGeomMesh mesh = UsdGeomMesh::Define(stage, SdfPath("/Mesh"));
 		if (!mesh)
 			return false;
 		stage->SetDefaultPrim(mesh.GetPrim());
+
+		// Right-handed / counter-clockwise front-face winding (canonical frame).
+		mesh.CreateOrientationAttr(VtValue(UsdGeomTokens->rightHanded));
 
 		// Polygonal mesh, not a subdivision surface: keep ngons as authored.
 		mesh.CreateSubdivisionSchemeAttr(VtValue(UsdGeomTokens->none));
