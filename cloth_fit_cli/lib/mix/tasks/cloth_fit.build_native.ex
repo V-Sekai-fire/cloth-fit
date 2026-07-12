@@ -44,29 +44,81 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
     tc = toolchain()
     Mix.shell().info("Toolchain: #{inspect(tc)}")
 
-    build_tbb(tc, repo_root, deps_dir, tbb_install, jobs)
-    configure_polyfem(tc, repo_root, build_dir, tbb_install)
+    usd = usd_config(tc)
+
+    # With USD the solver links the monolithic usd_ms, which brings its own SHARED
+    # oneTBB; PolyFEM must then also use a shared oneTBB so there is a single TBB
+    # runtime instance (two instances abort at first use).
+    build_tbb(tc, repo_root, deps_dir, tbb_install, jobs, usd != nil)
+    configure_polyfem(tc, repo_root, build_dir, tbb_install, usd)
     build(build_dir, "polyfem", jobs)
 
     gen_defines(build_dir, Path.join(cli_root, "c_src/polyfem_defines.rsp"))
-    gen_link(build_dir, tbb_install, Path.join(cli_root, "c_src/polyfem_link.rsp"))
+    gen_link(build_dir, tbb_install, usd, Path.join(cli_root, "c_src/polyfem_link.rsp"))
 
-    build_nif(cli_root, tc)
+    build_nif(cli_root, tc, usd, tbb_install)
+    if usd, do: bundle_runtime_libs(cli_root, tbb_install, usd)
 
     Mix.shell().info("Done. NIF built at priv/polyfem.*")
+  end
+
+  # OpenUSD I/O in the NIF is opt-in via CLOTH_FIT_WITH_USD until the Burrito
+  # bundling is wired (PR 2); default builds (incl. nif.yml/Burrito) stay USD-free.
+  # It is ABI-matched to PolyFEM's compiler on Linux (gcc) / macOS (clang); the
+  # Windows llvm-mingw build needs the x86_64-windows-gnu triplet + bundling.
+  defp usd_config(%{os: :windows}), do: nil
+
+  defp usd_config(_tc) do
+    if System.get_env("CLOTH_FIT_WITH_USD") in ~w(1 true) do
+      root = StageRuntime.root()
+      Mix.shell().info("==> OpenUSD I/O enabled: #{root}")
+      %{root: root, include: StageRuntime.include_dir(), lib: StageRuntime.lib_dir()}
+    else
+      nil
+    end
+  end
+
+  defp usd_flags(nil), do: []
+  defp usd_flags(%{root: root}), do: ["-DPOLYFEM_WITH_USD=ON", "-DPOLYFEM_USD_ROOT=#{root}"]
+
+  defp usd_env(nil), do: []
+  defp usd_env(%{include: i, lib: l}), do: [{"USD_INCLUDE_DIR", i}, {"USD_LIB_DIR", l}]
+
+  # Copy libusd_ms + the shared oneTBB next to the NIF so it is self-contained
+  # (the Makefile rpaths $ORIGIN). Both usd_ms and PolyFEM resolve the one
+  # libtbb by soname, giving a single TBB instance.
+  defp bundle_runtime_libs(cli_root, tbb_install, %{lib: usd_lib}) do
+    priv = Path.join(cli_root, "priv")
+    File.mkdir_p!(priv)
+
+    libs =
+      Path.wildcard(Path.join(usd_lib, "libusd_ms*")) ++
+        Path.wildcard(Path.join(usd_lib, "usd_ms*")) ++
+        Path.wildcard(Path.join([tbb_install, "lib", "libtbb*"])) ++
+        Path.wildcard(Path.join([tbb_install, "bin", "libtbb*"]))
+
+    # exclude static archives / import-only libs from the runtime bundle
+    for src <- libs, not String.ends_with?(src, ".a"), not String.ends_with?(src, ".dll.a") do
+      File.cp!(src, Path.join(priv, Path.basename(src)))
+    end
+
+    Mix.shell().info("bundled usd_ms + oneTBB runtime libs into priv/")
   end
 
   # Build the NIF directly via the Makefile. We invoke make here (rather than
   # relying on elixir_make) because within this single `mix` invocation the
   # compiler list was fixed before polyfem_link.rsp existed.
-  defp build_nif(cli_root, tc) do
+  defp build_nif(cli_root, tc, usd, tbb_install) do
     Mix.shell().info("==> Building NIF")
     make = if tc.os == :windows, do: find!("mingw32-make"), else: find!("make")
 
-    env = [
-      {"FINE_INCLUDE_DIR", Fine.include_dir()},
-      {"ERTS_INCLUDE_DIR", erts_include_dir()}
-    ]
+    tbb_env = if usd, do: [{"TBB_LIB_DIR", Path.join(tbb_install, "lib")}], else: []
+
+    env =
+      [
+        {"FINE_INCLUDE_DIR", Fine.include_dir()},
+        {"ERTS_INCLUDE_DIR", erts_include_dir()}
+      ] ++ usd_env(usd) ++ tbb_env
 
     case System.cmd(make, [], cd: cli_root, env: env,
            into: IO.stream(:stdio, :line), stderr_to_stdout: true) do
@@ -114,14 +166,19 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
   # --- oneTBB ----------------------------------------------------------------
 
-  defp build_tbb(tc, _repo_root, deps_dir, tbb_install, jobs) do
-    if tbb_lib(tbb_install) do
-      Mix.shell().info("oneTBB already installed at #{tbb_install}")
+  defp build_tbb(tc, _repo_root, deps_dir, tbb_install, jobs, shared) do
+    kind = if shared, do: "shared", else: "static"
+
+    if tbb_present?(tbb_install, shared) do
+      Mix.shell().info("oneTBB (#{kind}) already installed at #{tbb_install}")
     else
-      Mix.shell().info("==> Building oneTBB #{@tbb_tag} (static)")
+      Mix.shell().info("==> Building oneTBB #{@tbb_tag} (#{kind})")
       src = Path.join(deps_dir, "oneTBB")
       build = Path.join(deps_dir, "tbb-build")
       File.mkdir_p!(deps_dir)
+      # a previous build may have installed the other variant; start clean
+      File.rm_rf!(tbb_install)
+      File.rm_rf!(build)
 
       unless File.dir?(src) do
         cmd("git", ["clone", "--depth", "1", "--branch", @tbb_tag,
@@ -129,7 +186,8 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
       end
 
       cmd("cmake", ["-S", src, "-B", build] ++ gen_flags(tc) ++
-            ["-DCMAKE_BUILD_TYPE=Release", "-DBUILD_SHARED_LIBS=OFF",
+            ["-DCMAKE_BUILD_TYPE=Release",
+             "-DBUILD_SHARED_LIBS=#{if shared, do: "ON", else: "OFF"}",
              "-DTBB_TEST=OFF", "-DTBB_EXAMPLES=OFF", "-DTBB_STRICT=OFF",
              "-DCMAKE_POLICY_VERSION_MINIMUM=3.5",
              "-DCMAKE_INSTALL_PREFIX=#{tbb_install}"])
@@ -137,6 +195,15 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
       cmd("cmake", ["--build", build, "-j", jobs, "--target", "install"])
     end
   end
+
+  defp tbb_present?(tbb_install, true) do
+    lib = Path.join(tbb_install, "lib")
+    Path.wildcard(Path.join(lib, "libtbb.so*")) != [] or
+      Path.wildcard(Path.join(lib, "libtbb.*.dylib")) != [] or
+      Path.wildcard(Path.join(lib, "libtbb12.dll.a")) != []
+  end
+
+  defp tbb_present?(tbb_install, false), do: tbb_lib(tbb_install) != nil
 
   defp tbb_lib(tbb_install) do
     ["libtbb12.a", "libtbb.a"]
@@ -146,10 +213,13 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
   # --- PolyFEM ---------------------------------------------------------------
 
-  defp configure_polyfem(tc, repo_root, build_dir, tbb_install) do
+  defp configure_polyfem(tc, repo_root, build_dir, tbb_install, usd) do
     Mix.shell().info("==> Configuring PolyFEM")
 
-    cmd("cmake", ["-S", repo_root, "-B", build_dir] ++ gen_flags(tc) ++
+    # With USD, PolyFEM uses the shared oneTBB (single instance shared with usd_ms).
+    tbb_static = if usd, do: "OFF", else: "ON"
+
+    cmd("cmake", ["-S", repo_root, "-B", build_dir] ++ gen_flags(tc) ++ usd_flags(usd) ++
           ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
            # Emit the polyfem target's include flags into includes_CXX.rsp on
            # every generator (MinGW does this by default, Unix Makefiles inlines
@@ -157,7 +227,7 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
            "-DCMAKE_CXX_USE_RESPONSE_FILE_FOR_INCLUDES=ON",
            "-DOPENVDB_USE_DELAYED_LOADING=OFF",
            "-DTBB_ROOT=#{tbb_install}", "-DCMAKE_PREFIX_PATH=#{tbb_install}",
-           "-DTBB_USE_STATIC_LIBS=ON",
+           "-DTBB_USE_STATIC_LIBS=#{tbb_static}",
            "-DUSE_BLOSC=OFF", "-DUSE_ZLIB=OFF", "-DUSE_IMATH_HALF=OFF",
            "-DPOLYSOLVE_WITH_MKL=OFF", "-DPOLYSOLVE_WITH_CHOLMOD=OFF",
            "-DPOLYSOLVE_WITH_UMFPACK=OFF", "-DPOLYSOLVE_WITH_SUPERLU=OFF",
@@ -193,24 +263,27 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
   # Resolve the static libraries actually produced by the build (per-OS names)
   # and write a linker response file wrapped in a group so order does not matter.
-  defp gen_link(build_dir, tbb_install, out) do
+  defp gen_link(build_dir, tbb_install, usd, out) do
     deps = Path.join(build_dir, "_deps")
 
-    rels = [
-      "libpolyfem.a",
-      "_deps/polysolve-build/libpolysolve.a",
-      "_deps/polysolve-build/libpolysolve_linear.a",
-      "_deps/ipc-toolkit-build/libipc_toolkit.a",
-      "_deps/tight-inclusion-build/libtight_inclusion.a",
-      "_deps/scalable-ccd-build/libscalable_ccd.a",
-      "_deps/simplebvh-build/libsimple_bvh.a",
-      "_deps/finite-diff-build/libfinitediff_finitediff.a",
-      "_deps/json-spec-engine-build/libjse.a",
-      "lib/libpredicates.a",
-      "_deps/spdlog-build/libspdlog.a",
-      "_deps/filib-build/libfilib_filib.a",
-      "_deps/openvdb-build/openvdb/openvdb/libopenvdb.a"
-    ]
+    rels =
+      [
+        "libpolyfem.a",
+        "_deps/polysolve-build/libpolysolve.a",
+        "_deps/polysolve-build/libpolysolve_linear.a",
+        "_deps/ipc-toolkit-build/libipc_toolkit.a",
+        "_deps/tight-inclusion-build/libtight_inclusion.a",
+        "_deps/scalable-ccd-build/libscalable_ccd.a",
+        "_deps/simplebvh-build/libsimple_bvh.a",
+        "_deps/finite-diff-build/libfinitediff_finitediff.a",
+        "_deps/json-spec-engine-build/libjse.a",
+        "lib/libpredicates.a",
+        "_deps/spdlog-build/libspdlog.a",
+        "_deps/filib-build/libfilib_filib.a",
+        "_deps/openvdb-build/openvdb/openvdb/libopenvdb.a"
+      ] ++
+        # the USD reader/writer live in their own static lib that libpolyfem calls
+        if(usd, do: ["libpolyfem_usd.a"], else: [])
 
     absl =
       [deps, "abseil-cpp-build", "absl"]
@@ -218,7 +291,9 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
       |> Path.join("**/libabsl_*.a")
       |> Path.wildcard()
 
-    tbb = [tbb_lib(tbb_install)] |> Enum.reject(&is_nil/1)
+    # With USD, TBB is shared (linked via the Makefile alongside usd_ms) so it is a
+    # single instance; only the non-USD build puts the static oneTBB in the group.
+    tbb = if usd, do: [], else: [tbb_lib(tbb_install)] |> Enum.reject(&is_nil/1)
 
     libs =
       (Enum.map(rels, &Path.join(build_dir, &1)) ++ absl ++ tbb)

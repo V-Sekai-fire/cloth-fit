@@ -33,6 +33,19 @@ namespace polyfem {
 
     Eigen::Vector3d bbox_size(const Eigen::Matrix<double, -1, 3> &V);
 
+    /// @brief Read a mesh with groups, dispatching by extension: OpenUSD
+    /// (.usd/.usda/.usdc) via USDReader when built with POLYFEM_WITH_USD, else OBJ.
+    bool read_mesh_with_groups(const std::string &path, OBJData &data);
+
+    /// @brief Write a mesh with groups to `base_path_no_ext` + the extension for
+    /// `format`: "usd" -> `.usda` via USDWriter (POLYFEM_WITH_USD), else `.obj`.
+    bool write_mesh_with_groups(
+        const std::string &base_path_no_ext, const std::string &format, const OBJData &data);
+
+    /// @brief Build a triangulated OBJData (positions + faces only) from Eigen V/F,
+    /// for the one-shot outputs that have no group/material structure.
+    OBJData eigen_to_obj_data(const Eigen::MatrixXd &V, const Eigen::MatrixXi &F);
+
     class GarmentSolver
     {
     public:
@@ -66,6 +79,9 @@ namespace polyfem {
         int n_garment_faces() const { return garment.f.rows(); }
 
         std::string out_folder;
+
+        // Output mesh format for save_result / one-shot writes: "obj" or "usd".
+        std::string out_format = "obj";
 
         // Original avatar mesh
         Eigen::MatrixXd avatar_v;

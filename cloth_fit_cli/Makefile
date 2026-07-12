@@ -43,6 +43,25 @@ else
 	endif
 endif
 
+# OpenUSD: when the build task exports USD_LIB_DIR (Linux/macOS), the solver
+# inside libpolyfem calls into usd_ms, so link it plus the SHARED oneTBB (one TBB
+# instance shared with usd_ms) and rpath the NIF's own dir, where both are
+# bundled. Use the DYNAMIC C++ runtime so the NIF and usd_ms share one libstdc++
+# across the call boundary (the static-libstdc++ Burrito bundling is handled
+# separately for the packaged binary).
+ifneq ($(USD_LIB_DIR),)
+	ifeq ($(shell uname -s),Darwin)
+		USD_RPATH = -Wl,-rpath,@loader_path
+		SYS_LIBS = -lc++ -lm -lpthread
+	else
+		USD_RPATH = -Wl,-rpath,'$$ORIGIN'
+		SYS_LIBS = -lstdc++ -lm -lpthread -ldl
+	endif
+	USD_LINK = -L"$(USD_LIB_DIR)" -lusd_ms -L"$(TBB_LIB_DIR)" -ltbb $(USD_RPATH)
+else
+	USD_LINK =
+endif
+
 NIF = $(PRIV_DIR)/polyfem.$(NIF_EXT)
 
 POLYFEM_INCLUDES_RSP = $(POLYFEM_BUILD_DIR)/CMakeFiles/polyfem.dir/includes_CXX.rsp
@@ -58,7 +77,7 @@ all: $(NIF)
 $(NIF): $(SRC) $(POLYFEM_DEFINES_RSP) $(POLYFEM_LINK_RSP) | $(PRIV_DIR)
 	$(CXX) $(CXXFLAGS) -I"$(FINE_INCLUDE_DIR)" -I"$(ERTS_INCLUDE_DIR)" \
 		@$(POLYFEM_INCLUDES_RSP) @$(POLYFEM_DEFINES_RSP) $(SO_FLAGS) -o $@ $(SRC) \
-		@$(POLYFEM_LINK_RSP) $(SYS_LIBS)
+		@$(POLYFEM_LINK_RSP) $(USD_LINK) $(SYS_LIBS)
 
 $(PRIV_DIR):
 	mkdir -p $(PRIV_DIR)

@@ -4,6 +4,10 @@
 #include <polyfem/solver/forms/ContactForm.hpp>
 #include <polyfem/io/OBJReader.hpp>
 #include <polyfem/io/OBJWriter.hpp>
+#ifdef POLYFEM_WITH_USD
+#include <polyfem/io/USDReader.hpp>
+#include <polyfem/io/USDWriter.hpp>
+#endif
 #include <polyfem/io/MatrixIO.hpp>
 #include <polyfem/mesh/MeshUtils.hpp>
 #include <polyfem/utils/JSONUtils.hpp>
@@ -38,6 +42,7 @@
 #include <jse/jse.h>
 
 #include <unordered_set>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <regex>
@@ -505,25 +510,26 @@ namespace polyfem {
             garment_output_data.face_to_object = garment_face_to_object;
             garment_output_data.mtl_filename = garment.mtl_filename;
 
-            // Write with groups
-            if (io::OBJWriter::write_with_groups(path + "/step_garment_" + std::to_string(index) + ".obj", garment_output_data))
+            // Write with groups (OBJ or USD per out_format)
+            const std::string garment_base = path + "/step_garment_" + std::to_string(index);
+            if (write_mesh_with_groups(garment_base, out_format, garment_output_data))
             {
-                logger().debug("Saved garment OBJ with groups: {}", path + "/step_garment_" + std::to_string(index) + ".obj");
+                logger().debug("Saved garment mesh with groups: {}", garment_base);
             }
             else
             {
                 logger().warn("Failed to save garment with groups, falling back to basic OBJ");
-                garment.write(path + "/step_garment_" + std::to_string(index) + ".obj");
+                garment.write(garment_base + ".obj");
             }
         }
         else
         {
-            garment.write(path + "/step_garment_" + std::to_string(index) + ".obj");
-            logger().debug("Save OBJ to {}", path + "/step_garment_" + std::to_string(index) + ".obj");
+            write_mesh_with_groups(path + "/step_garment_" + std::to_string(index), out_format,
+                                   eigen_to_obj_data(garment.v, garment.f));
         }
 
-        // Write garment MTL file if materials exist
-        if (!garment_materials.empty() && !garment.mtl_filename.empty())
+        // Write garment MTL file if materials exist (OBJ output only)
+        if (out_format != "usd" && !garment_materials.empty() && !garment.mtl_filename.empty())
         {
             std::string garment_mtl_dest = path + "/step_garment_" + std::to_string(index) + ".mtl";
             std::string source_dir = garment_mtl_source_path.empty() ? "" :
@@ -568,24 +574,27 @@ namespace polyfem {
             // Rendering engines will compute correct normals automatically from the mesh
             logger().debug("Skipping normals in output - will be computed automatically by rendering engines");
 
-            // Write with groups
-            if (io::OBJWriter::write_with_groups(path + "/step_avatar_" + std::to_string(index) + ".obj", avatar_output_data))
+            // Write with groups (OBJ or USD per out_format)
+            const std::string avatar_base = path + "/step_avatar_" + std::to_string(index);
+            if (write_mesh_with_groups(avatar_base, out_format, avatar_output_data))
             {
-                logger().debug("Saved avatar OBJ with groups: {}", path + "/step_avatar_" + std::to_string(index) + ".obj");
+                logger().debug("Saved avatar mesh with groups: {}", avatar_base);
             }
             else
             {
                 logger().warn("Failed to save avatar with groups, falling back to basic OBJ");
-                igl::write_triangle_mesh(path + "/step_avatar_" + std::to_string(index) + ".obj", avatar_vertices, nc_avatar_f);
+                igl::write_triangle_mesh(avatar_base + ".obj", avatar_vertices, nc_avatar_f);
             }
         }
         else
         {
-            igl::write_triangle_mesh(path + "/step_avatar_" + std::to_string(index) + ".obj", current_vertices.topRows(nc_avatar_v.rows()), nc_avatar_f);
+            const Eigen::MatrixXd av = current_vertices.topRows(nc_avatar_v.rows());
+            write_mesh_with_groups(path + "/step_avatar_" + std::to_string(index), out_format,
+                                   eigen_to_obj_data(av, nc_avatar_f));
         }
 
-        // Write avatar MTL file if materials exist
-        if (!avatar_materials.empty() && !avatar_mtl_filename.empty())
+        // Write avatar MTL file if materials exist (OBJ output only)
+        if (out_format != "usd" && !avatar_materials.empty() && !avatar_mtl_filename.empty())
         {
             std::string avatar_mtl_dest = path + "/step_avatar_" + std::to_string(index) + ".mtl";
             std::string source_dir = avatar_mtl_source_path.empty() ? "" :
@@ -602,13 +611,76 @@ namespace polyfem {
         return V.colwise().maxCoeff() - V.colwise().minCoeff();
     }
 
+    // --- mesh format dispatch (OBJ / OpenUSD) ---------------------------------
+
+    static bool has_suffix_ci(const std::string &s, const std::string &suf)
+    {
+        if (s.size() < suf.size())
+        {
+            return false;
+        }
+        for (size_t i = 0; i < suf.size(); ++i)
+        {
+            if (std::tolower((unsigned char)s[s.size() - suf.size() + i]) != suf[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool is_usd_path(const std::string &p)
+    {
+        return has_suffix_ci(p, ".usd") || has_suffix_ci(p, ".usda") ||
+               has_suffix_ci(p, ".usdc") || has_suffix_ci(p, ".usdz");
+    }
+
+    bool read_mesh_with_groups(const std::string &path, OBJData &data)
+    {
+#ifdef POLYFEM_WITH_USD
+        if (is_usd_path(path))
+        {
+            return io::USDReader::read_with_groups(path, data);
+        }
+#endif
+        return io::OBJReader::read_with_groups(path, data);
+    }
+
+    bool write_mesh_with_groups(
+        const std::string &base, const std::string &format, const OBJData &data)
+    {
+#ifdef POLYFEM_WITH_USD
+        if (format == "usd")
+        {
+            return io::USDWriter::write_with_groups(base + ".usda", data);
+        }
+#endif
+        return io::OBJWriter::write_with_groups(base + ".obj", data);
+    }
+
+    OBJData eigen_to_obj_data(const Eigen::MatrixXd &V, const Eigen::MatrixXi &F)
+    {
+        OBJData data;
+        data.V.resize(V.rows());
+        for (int i = 0; i < V.rows(); ++i)
+        {
+            data.V[i] = {V(i, 0), V(i, 1), V(i, 2)};
+        }
+        data.F.resize(F.rows());
+        for (int i = 0; i < F.rows(); ++i)
+        {
+            data.F[i] = {F(i, 0), F(i, 1), F(i, 2)};
+        }
+        return data;
+    }
+
     void GarmentSolver::load_garment_mesh(
         const std::string &mesh_path,
         const std::string &no_fit_spec_path)
 	{
         // Read garment mesh with group information
         OBJData garment_obj_data;
-        if (io::OBJReader::read_with_groups(mesh_path, garment_obj_data))
+        if (read_mesh_with_groups(mesh_path, garment_obj_data))
         {
             // Convert to Eigen matrices
             garment.v.resize(garment_obj_data.V.size(), 3);
@@ -798,7 +870,7 @@ namespace polyfem {
     {
         // Read avatar mesh with group information
         OBJData avatar_obj_data;
-        if (io::OBJReader::read_with_groups(avatar_mesh_path, avatar_obj_data))
+        if (read_mesh_with_groups(avatar_mesh_path, avatar_obj_data))
         {
             // Convert to Eigen matrices
             avatar_v.resize(avatar_obj_data.V.size(), 3);
