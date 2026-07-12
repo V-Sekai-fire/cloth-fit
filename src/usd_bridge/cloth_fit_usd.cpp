@@ -14,8 +14,16 @@
 
 #include <algorithm>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#  define WIN32_LEAN_AND_MEAN
+#  include <windows.h>
+#else
+#  include <dlfcn.h>
+#endif
 
 using polyfem::OBJData;
 using polyfem::OBJGroup;
@@ -37,6 +45,35 @@ namespace
         const int32_t n = static_cast<int32_t>(std::min(static_cast<size_t>(cap - 1), s.size()));
         std::memcpy(out, s.data(), n);
         out[n] = '\0';
+    }
+
+    // Directory containing this bridge module, so the USD plugin registry can be
+    // resolved next to it (relocatable — e.g. bundled into a Burrito binary).
+    std::string bridge_module_dir()
+    {
+#ifdef _WIN32
+        HMODULE hm = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(&cfusd_version), &hm) != 0)
+        {
+            char buf[MAX_PATH] = {0};
+            GetModuleFileNameA(hm, buf, MAX_PATH);
+            std::string p(buf);
+            const auto slash = p.find_last_of("\\/");
+            return (slash == std::string::npos) ? std::string() : p.substr(0, slash);
+        }
+        return "";
+#else
+        Dl_info info;
+        if (dladdr(reinterpret_cast<void *>(&cfusd_version), &info) != 0 && info.dli_fname != nullptr)
+        {
+            std::string p(info.dli_fname);
+            const auto slash = p.find_last_of('/');
+            return (slash == std::string::npos) ? std::string() : p.substr(0, slash);
+        }
+        return "";
+#endif
     }
 
     // Resolve a flat group index (across all objects, in order) to (object, group).
@@ -71,9 +108,30 @@ CFUSD_API const char *cfusd_version(void)
 
 CFUSD_API int32_t cfusd_init(const char *plugin_dir)
 {
+    std::string dir;
     if (plugin_dir != nullptr && plugin_dir[0] != '\0')
     {
-        PXR_NS::PlugRegistry::GetInstance().RegisterPlugins(std::string(plugin_dir));
+        dir = plugin_dir;
+    }
+    else
+    {
+        // Prefer the plugin tree bundled next to the bridge (relocatable);
+        // otherwise fall back to the path compiled in at build time.
+        const std::string self = bridge_module_dir();
+        if (!self.empty())
+        {
+            const std::string cand = self + "/usd";
+            std::error_code ec;
+            if (std::filesystem::exists(cand + "/plugInfo.json", ec))
+            {
+                dir = cand;
+            }
+        }
+    }
+
+    if (!dir.empty())
+    {
+        PXR_NS::PlugRegistry::GetInstance().RegisterPlugins(dir);
     }
     else
     {

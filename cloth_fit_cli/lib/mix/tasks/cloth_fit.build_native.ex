@@ -66,17 +66,20 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
     Mix.shell().info("Done. NIF built at priv/polyfem.*")
   end
 
-  # OpenUSD I/O in the NIF is opt-in via CLOTH_FIT_WITH_USD until the Burrito
-  # bundling is wired (PR 2); default builds (incl. nif.yml/Burrito) stay USD-free.
-  # It is ABI-matched to PolyFEM's compiler on Linux (gcc) / macOS (clang); the
-  # Windows llvm-mingw build needs the x86_64-windows-gnu triplet + bundling.
-  defp usd_config(%{os: :windows}), do: nil
-
-  defp usd_config(_tc) do
+  # OpenUSD I/O in the NIF is opt-in via CLOTH_FIT_WITH_USD; default builds (incl.
+  # nif.yml/Burrito) stay USD-free. ABI-matched to PolyFEM's compiler on every OS:
+  # gcc on Linux, clang on macOS, llvm-mingw on Windows (the x86_64-windows-gnu
+  # usd_ms triplet — the shipped MSVC triplet would not link against llvm-mingw).
+  defp usd_config(tc) do
     if System.get_env("CLOTH_FIT_WITH_USD") in ~w(1 true) do
+      # Windows defaults to the MSVC triplet; force the gnu one for llvm-mingw.
+      if tc.os == :windows do
+        System.put_env("OPENUSD_TARGET", "x86_64-windows-gnu")
+      end
+
       root = StageRuntime.root()
       Mix.shell().info("==> OpenUSD I/O enabled: #{root}")
-      %{root: root, include: StageRuntime.include_dir(), lib: StageRuntime.lib_dir()}
+      %{os: tc.os, root: root, include: StageRuntime.include_dir(), lib: StageRuntime.lib_dir()}
     else
       nil
     end
@@ -85,11 +88,17 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
   defp usd_flags(nil), do: []
   defp usd_flags(%{root: root}), do: ["-DPOLYFEM_WITH_USD=ON", "-DPOLYFEM_USD_ROOT=#{root}"]
 
-  # Copy the bridge (cloth_fit_usd) + its runtime deps (usd_ms + oneTBB, shipped in
-  # the usd archive lib/) next to the NIF, so the NIF dlopens a self-contained
-  # bridge. The Elixir side points CFUSD_BRIDGE/CFUSD_PLUGIN_DIR at priv/ + the
-  # usd plugin tree.
-  defp bundle_runtime_libs(cli_root, build_dir, %{lib: usd_lib}) do
+  # Static link inputs the NIF adds for USD: the loader stub always, plus (on
+  # Windows) the bridge's import lib so cfusd_* bind load-time (POSIX binds via the
+  # dlsym stub in libcloth_fit_usd_stub.a).
+  defp usd_link_libs(nil), do: []
+  defp usd_link_libs(%{os: :windows}), do: ["libcloth_fit_usd_stub.a", "libcloth_fit_usd.dll.a"]
+  defp usd_link_libs(_usd), do: ["libcloth_fit_usd_stub.a"]
+
+  # Copy the bridge (cloth_fit_usd) + its runtime deps (usd_ms + oneTBB) + the USD
+  # plugin tree next to the NIF, so the NIF loads a self-contained, relocatable
+  # bridge (cfusd_init finds priv/usd next to the bridge; see cloth_fit_usd.cpp).
+  defp bundle_runtime_libs(cli_root, build_dir, %{root: root, lib: usd_lib}) do
     priv = Path.join(cli_root, "priv")
     File.mkdir_p!(priv)
 
@@ -105,7 +114,15 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
       File.cp!(src, Path.join(priv, Path.basename(src)))
     end
 
-    Mix.shell().info("bundled cloth_fit_usd bridge + usd_ms + oneTBB into priv/")
+    plugin_src = Path.join([root, "lib", "usd"])
+    plugin_dst = Path.join(priv, "usd")
+
+    if File.dir?(plugin_src) do
+      File.rm_rf!(plugin_dst)
+      File.cp_r!(plugin_src, plugin_dst)
+    end
+
+    Mix.shell().info("bundled cloth_fit_usd bridge + usd_ms + oneTBB + plugins into priv/")
   end
 
   # Build the NIF directly via the Makefile. We invoke make here (rather than
@@ -266,9 +283,7 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
         "_deps/spdlog-build/libspdlog.a",
         "_deps/filib-build/libfilib_filib.a",
         "_deps/openvdb-build/openvdb/openvdb/libopenvdb.a"
-      ] ++
-        # the USD dlopen stub (weak cfusd_* forwarders + loader) — no usd_ms here
-        if(usd, do: ["libcloth_fit_usd_stub.a"], else: [])
+      ] ++ usd_link_libs(usd)
 
     absl =
       [deps, "abseil-cpp-build", "absl"]
@@ -282,8 +297,18 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
       (Enum.map(rels, &Path.join(build_dir, &1)) ++ absl ++ tbb)
       |> Enum.filter(&File.exists?/1)
 
+    # On Windows the bridge (libcloth_fit_usd.dll) is delay-loaded: the NIF must
+    # load without it (its libusd_ms.dll + tbb deps aren't on the OS search path),
+    # and cfusd_loader::load_from_env() LoadLibraryEx's it from priv/ (altered
+    # search path) before the first cfusd_* call binds the delay thunks.
+    delay =
+      case usd do
+        %{os: :windows} -> "-Wl,-delayload,libcloth_fit_usd.dll\n"
+        _ -> ""
+      end
+
     body =
-      "-Wl,--start-group\n" <> Enum.join(libs, "\n") <> "\n-Wl,--end-group\n"
+      "-Wl,--start-group\n" <> Enum.join(libs, "\n") <> "\n-Wl,--end-group\n" <> delay
 
     File.write!(out, body)
     Mix.shell().info("wrote #{length(libs)} link inputs -> #{out}")

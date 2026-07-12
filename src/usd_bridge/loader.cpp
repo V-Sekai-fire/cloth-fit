@@ -52,10 +52,28 @@ namespace cfusd_loader
     }
 
     // Resolve the bridge lib sitting next to the consumer module (the NIF / binary
-    // that links this stub) via dladdr, so no CFUSD_BRIDGE env handoff is needed.
+    // that links this stub), so no CFUSD_BRIDGE env handoff is needed. On Windows
+    // this is essential: the bridge is delay-loaded, so load() must LoadLibraryEx
+    // its full path with LOAD_WITH_ALTERED_SEARCH_PATH for libusd_ms.dll + tbb to
+    // resolve from the same dir before the delay thunks bind.
     static std::string bridge_next_to_self()
     {
-#ifndef _WIN32
+#ifdef _WIN32
+        HMODULE hm = nullptr;
+        if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                   GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                               reinterpret_cast<LPCSTR>(&load), &hm) != 0)
+        {
+            char buf[MAX_PATH] = {0};
+            if (GetModuleFileNameA(hm, buf, MAX_PATH) != 0)
+            {
+                std::string self(buf);
+                const auto slash = self.find_last_of("\\/");
+                const std::string dir = (slash == std::string::npos) ? std::string(".") : self.substr(0, slash);
+                return dir + "\\libcloth_fit_usd.dll";
+            }
+        }
+#else
         Dl_info info;
         if (dladdr(reinterpret_cast<void *>(&load), &info) != 0 && info.dli_fname != nullptr)
         {

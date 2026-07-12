@@ -249,7 +249,6 @@ if(POLYFEM_WITH_USD)
     if(NOT POLYFEM_USD_ROOT)
         message(FATAL_ERROR "POLYFEM_WITH_USD=ON requires -DPOLYFEM_USD_ROOT=<openusd tree>")
     endif()
-    find_package(Python3 REQUIRED COMPONENTS Interpreter)
     find_library(POLYFEM_USD_MS_LIB
         NAMES usd_ms libusd_ms
         PATHS "${POLYFEM_USD_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
@@ -282,36 +281,48 @@ if(POLYFEM_WITH_USD)
     set_property(TARGET cloth_fit_usd APPEND PROPERTY
         BUILD_RPATH "${POLYFEM_USD_ROOT}/lib;${CFUSD_ORIGIN}")
 
-    # 2. Generate the dlopen stubs (POSIX dlsym table) from the .sigs.
-    set(CFUSD_GEN "${CMAKE_BINARY_DIR}/usd_bridge_generated")
-    add_custom_command(
-        OUTPUT "${CFUSD_GEN}/cloth_fit_usd_stubs.cc" "${CFUSD_GEN}/cfusd/cloth_fit_usd_stubs.h"
-        COMMAND ${CMAKE_COMMAND} -E make_directory "${CFUSD_GEN}/cfusd"
-        COMMAND ${Python3_EXECUTABLE}
-                "${PROJECT_SOURCE_DIR}/thirdparty/generate_stubs/generate_stubs.py"
-                -o "${CFUSD_GEN}" -i "${CFUSD_GEN}" -t posix_stubs
-                -s cloth_fit_usd_stubs -p cfusd -l "std::cerr" -n iostream
-                --macro-include "${CFUSD_DIR}/stubgen_compat.h"
-                "${CFUSD_DIR}/cloth_fit_usd.sigs"
-        COMMAND ${CMAKE_COMMAND} -E copy
-                "${CFUSD_GEN}/cloth_fit_usd_stubs.h" "${CFUSD_GEN}/cfusd/cloth_fit_usd_stubs.h"
-        DEPENDS "${CFUSD_DIR}/cloth_fit_usd.sigs" "${CFUSD_DIR}/stubgen_compat.h"
-        COMMENT "Generating cloth_fit_usd dlopen stubs")
+    # 2-3. Consumers bind cfusd_* + carry the loader. The mechanism differs by OS.
+    if(WIN32)
+        # llvm-mingw has no dlfcn, so the POSIX dlsym stub can't compile. Instead
+        # consumers bind cfusd_* via the bridge's auto-generated import lib
+        # (load-time), and the loader's _WIN32 branch LoadLibraryEx's the bridge so
+        # its deps (usd_ms.dll, tbb) resolve. Still zero usd_ms on the NIF link line.
+        add_library(cloth_fit_usd_stub STATIC "${CFUSD_DIR}/loader.cpp")
+        target_include_directories(cloth_fit_usd_stub PUBLIC "${CFUSD_DIR}")
+        set_target_properties(cloth_fit_usd_stub PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        target_link_libraries(polyfem PUBLIC cloth_fit_usd cloth_fit_usd_stub)
+    else()
+        # POSIX: generate the dlsym dispatch table from the .sigs; consumers link a
+        # stub with weak cfusd_* forwarders + the loader and dlopen the bridge.
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        set(CFUSD_GEN "${CMAKE_BINARY_DIR}/usd_bridge_generated")
+        add_custom_command(
+            OUTPUT "${CFUSD_GEN}/cloth_fit_usd_stubs.cc" "${CFUSD_GEN}/cfusd/cloth_fit_usd_stubs.h"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CFUSD_GEN}/cfusd"
+            COMMAND ${Python3_EXECUTABLE}
+                    "${PROJECT_SOURCE_DIR}/thirdparty/generate_stubs/generate_stubs.py"
+                    -o "${CFUSD_GEN}" -i "${CFUSD_GEN}" -t posix_stubs
+                    -s cloth_fit_usd_stubs -p cfusd -l "std::cerr" -n iostream
+                    --macro-include "${CFUSD_DIR}/stubgen_compat.h"
+                    "${CFUSD_DIR}/cloth_fit_usd.sigs"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "${CFUSD_GEN}/cloth_fit_usd_stubs.h" "${CFUSD_GEN}/cfusd/cloth_fit_usd_stubs.h"
+            DEPENDS "${CFUSD_DIR}/cloth_fit_usd.sigs" "${CFUSD_DIR}/stubgen_compat.h"
+            COMMENT "Generating cloth_fit_usd dlopen stubs")
 
-    # 3. The stub static lib consumers link: weak cfusd_* forwarders + the loader.
-    add_library(cloth_fit_usd_stub STATIC
-        "${CFUSD_GEN}/cloth_fit_usd_stubs.cc"
-        "${CFUSD_DIR}/loader.cpp")
-    target_include_directories(cloth_fit_usd_stub PUBLIC "${CFUSD_GEN}" "${CFUSD_DIR}")
-    set_target_properties(cloth_fit_usd_stub PROPERTIES POSITION_INDEPENDENT_CODE ON)
-    # the dlsym table + loader dlopen the bridge -> consumers need libdl
-    target_link_libraries(cloth_fit_usd_stub PUBLIC ${CMAKE_DL_LIBS})
+        add_library(cloth_fit_usd_stub STATIC
+            "${CFUSD_GEN}/cloth_fit_usd_stubs.cc"
+            "${CFUSD_DIR}/loader.cpp")
+        target_include_directories(cloth_fit_usd_stub PUBLIC "${CFUSD_GEN}" "${CFUSD_DIR}")
+        set_target_properties(cloth_fit_usd_stub PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        target_link_libraries(cloth_fit_usd_stub PUBLIC ${CMAKE_DL_LIBS})
+        target_link_libraries(polyfem PUBLIC cloth_fit_usd_stub)
+    endif()
 
     # 4. libpolyfem calls the C ABI (no usd_ms); consumers get the stub transitively.
     target_include_directories(polyfem PUBLIC "${CFUSD_DIR}")
     target_compile_definitions(polyfem PUBLIC POLYFEM_WITH_USD)
-    target_link_libraries(polyfem PUBLIC cloth_fit_usd_stub)
-    message(STATUS "PolyFEM: OpenUSD via dlopen bridge (${POLYFEM_USD_MS_LIB})")
+    message(STATUS "PolyFEM: OpenUSD via bridge (${POLYFEM_USD_MS_LIB})")
 endif()
 
 ################################################################################

@@ -20,32 +20,11 @@ defmodule ClothFitCli.PolyFEM do
   - `{:error, reason}` on failure
   """
   def simulate(config, output_path) when is_map(config) and is_binary(output_path) do
-    maybe_set_usd_env()
+    # When built with USD, the NIF self-locates the cloth_fit_usd bridge next to
+    # itself (dladdr / import lib) and the plugin registry in priv/usd — no env
+    # handoff needed. See src/usd_bridge/{loader,cloth_fit_usd}.cpp.
     config_payload = Jason.encode!(config)
     PolyFem.simulate(config_payload, output_path)
-  end
-
-  # If the NIF was built with USD (CLOTH_FIT_WITH_USD), the cloth_fit_usd bridge is
-  # bundled in priv/. Point the C loader at it + the USD plugin registry so the NIF
-  # can dlopen the bridge for USD read/write. No-op for the default (USD-off) build.
-  defp maybe_set_usd_env do
-    priv = to_string(:code.priv_dir(:cloth_fit_cli))
-
-    bridge =
-      Path.wildcard(Path.join(priv, "libcloth_fit_usd.*")) ++
-        Path.wildcard(Path.join(priv, "cloth_fit_usd.dll"))
-
-    case bridge do
-      [b | _] ->
-        System.put_env("CFUSD_BRIDGE", b)
-
-        if Code.ensure_loaded?(StageRuntime) do
-          System.put_env("CFUSD_PLUGIN_DIR", Path.join(StageRuntime.root(), "lib/usd"))
-        end
-
-      [] ->
-        :ok
-    end
   end
 
   @doc """
