@@ -65,6 +65,7 @@ set(POLYFEM_BIG_N   1000 CACHE STRING "Maximum length for stack-allocated vector
 
 # Polyfem options for enabling/disabling optional libraries
 option(POLYFEM_WITH_TESTS     "Build tests"                                 ON)
+option(POLYFEM_WITH_USD       "Build OpenUSD mesh I/O (USDReader/USDWriter)" OFF)
 set(POLYFEM_THREADING "TBB" CACHE STRING "Multithreading library to use (options: CPP, TBB, NONE)")
 set_property(CACHE POLYFEM_THREADING PROPERTY STRINGS "CPP" "TBB" "NONE")
 option(POLYFEM_CODE_COVERAGE "Enable coverage reporting" OFF)
@@ -235,6 +236,44 @@ target_link_libraries(polyfem PUBLIC spdlog::spdlog)
 # JSON Specification Engine library
 include(jse)
 target_link_libraries(polyfem PUBLIC jse::jse)
+
+# OpenUSD (optional): lossless USD mesh I/O via the prebuilt monolithic usd_ms.
+#
+# Wired manually rather than via find_package(pxr): pxrConfig.cmake always
+# defines a TBB::tbb imported target, which would collide with PolyFEM's own
+# TBB::tbb. The monolithic usd_ms exports all of pxr and the archive bundles its
+# own tbb/oneapi headers, so a bare include dir + link is self-contained.
+if(POLYFEM_WITH_USD)
+    if(NOT POLYFEM_USD_ROOT)
+        message(FATAL_ERROR "POLYFEM_WITH_USD=ON requires -DPOLYFEM_USD_ROOT=<openusd tree>")
+    endif()
+    find_library(POLYFEM_USD_MS_LIB
+        NAMES usd_ms libusd_ms
+        PATHS "${POLYFEM_USD_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
+
+    # USDReader/USDWriter include third-party OpenUSD headers, which do not
+    # satisfy PolyFEM's strict -Werror set (e.g. -Werror=non-virtual-dtor on Sdf
+    # value types). Build them in their own library that does NOT link
+    # polyfem::warnings, then link it into polyfem. The pxr headers (and the
+    # bundled tbb/oneapi headers they pull in) stay private to this library.
+    add_library(polyfem_usd STATIC
+        "${POLYFEM_SOURCE_DIR}/io/USDReader.cpp"
+        "${POLYFEM_SOURCE_DIR}/io/USDWriter.cpp")
+    target_compile_features(polyfem_usd PUBLIC cxx_std_17)
+    set_target_properties(polyfem_usd PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(polyfem_usd
+        PUBLIC "${POLYFEM_INCLUDE_DIR}"
+        PRIVATE "${POLYFEM_USD_ROOT}/include")
+    target_compile_definitions(polyfem_usd
+        PRIVATE POLYFEM_WITH_USD POLYFEM_USD_PLUGIN_PATH="${POLYFEM_USD_ROOT}/lib/usd")
+    target_link_libraries(polyfem_usd PUBLIC "${POLYFEM_USD_MS_LIB}")
+    # so binaries linking polyfem find libusd_ms + its shared TBB at run time
+    set_property(TARGET polyfem_usd APPEND PROPERTY BUILD_RPATH "${POLYFEM_USD_ROOT}/lib")
+
+    target_link_libraries(polyfem PUBLIC polyfem_usd)
+    target_compile_definitions(polyfem PUBLIC POLYFEM_WITH_USD)
+    message(STATUS "PolyFEM: OpenUSD mesh I/O enabled (${POLYFEM_USD_MS_LIB})")
+endif()
 
 ################################################################################
 # Optional libraries

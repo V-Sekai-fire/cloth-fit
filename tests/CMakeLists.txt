@@ -9,7 +9,17 @@ set(test_sources
   test_mesh.cpp
 )
 
+if(POLYFEM_WITH_USD)
+  list(APPEND test_sources test_usd_io.cpp)
+endif()
+
 add_executable(unit_tests ${test_sources})
+
+# Find libusd_ms + its shared TBB at run time, and register the USD plugin tree
+# (backstop to the path compiled into polyfem) for ctest invocations.
+if(POLYFEM_WITH_USD)
+  set_property(TARGET unit_tests APPEND PROPERTY BUILD_RPATH "${POLYFEM_USD_ROOT}/lib")
+endif()
 # set_property(TARGET unit_tests PROPERTY COMPILE_WARNING_AS_ERROR ON)
 
 ################################################################################

@@ -31,7 +31,9 @@ else
 	ifeq ($(UNAME_S),Darwin)
 		NIF_EXT = so
 		SO_FLAGS = -dynamiclib -undefined dynamic_lookup
-		SYS_LIBS = -lstdc++ -lm -lpthread -ldl
+		# macOS uses libc++ (system library, present everywhere); dlopen lives in
+		# libSystem so there is no separate -ldl.
+		SYS_LIBS = -lc++ -lm -lpthread
 	else
 		NIF_EXT = so
 		SO_FLAGS = -shared -fPIC

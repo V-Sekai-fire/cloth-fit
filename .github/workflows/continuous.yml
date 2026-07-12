@@ -40,6 +40,16 @@ jobs:
                   echo 'CACHE_PATH=~/.cache/ccache' >> "$GITHUB_ENV"
                   sudo apt-get install -y libboost-iostreams-dev libtbb-dev libblosc-dev
 
+            - name: Fetch prebuilt OpenUSD runtime
+              run: |
+                  set -euo pipefail
+                  USD_DIR="$RUNNER_TEMP/usd"
+                  mkdir -p "$USD_DIR"
+                  curl -fsSL -o "$RUNNER_TEMP/usd.tar.gz" \
+                    https://github.com/v-sekai-multiplayer-fabric/fabric-stage-runtime/releases/download/v0.1.0-dev.4/openusd-26.05-x86_64-linux-gnu.tar.gz
+                  tar xzf "$RUNNER_TEMP/usd.tar.gz" -C "$USD_DIR"
+                  echo "POLYFEM_USD_ROOT=$USD_DIR" >> "$GITHUB_ENV"
+
             - name: Cache Build
               id: cache-build
               uses: actions/cache@v4
@@ -63,10 +73,15 @@ jobs:
                     -DCMAKE_BUILD_TYPE=${{ matrix.config }} \
                     -DCMAKE_CXX_FLAGS_DEBUGNOSYMBOLS="" \
                     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
-                    -DPOLYFEM_THREADING=${{ matrix.threading }}
+                    -DPOLYFEM_THREADING=${{ matrix.threading }} \
+                    -DPOLYFEM_WITH_USD=ON \
+                    -DPOLYFEM_USD_ROOT="$POLYFEM_USD_ROOT"
 
             - name: Build
               run: cd build; make -j2; ccache --show-stats
+
+            - name: USD I/O round-trip test
+              run: cd build; ctest --output-on-failure -R usd
 
   # - name: Setup tmate session
   #   if: ${{ failure() }}
