@@ -4,7 +4,9 @@ defmodule ClothFitCli.MixProject do
   def project do
     [
       app: :cloth_fit_cli,
-      version: "0.1.0",
+      # dev stage per the release-tag progression convention (dev→beta→rc→release);
+      # 0.1.0 has not been released. Unpadded counter starting at 1.
+      version: "0.1.0-dev.1",
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       deps: deps(),
