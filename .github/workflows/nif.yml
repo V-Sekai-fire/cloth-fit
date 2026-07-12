@@ -45,9 +45,11 @@ jobs:
             - uses: erlef/setup-beam@v1
               with: { otp-version: '${{ env.OTP_VERSION }}', elixir-version: '${{ env.ELIXIR_VERSION }}' }
 
-            - name: Build NIF
+            - name: Build NIF (with USD)
               shell: bash
               working-directory: cloth_fit_cli
+              env:
+                  CLOTH_FIT_WITH_USD: '1'
               run: |
                   set -euo pipefail
                   mix local.hex --force && mix local.rebar --force
@@ -59,10 +61,12 @@ jobs:
               working-directory: cloth_fit_cli
               run: mix run test_nifs.exs
 
+            # Ship the whole priv/ tree: polyfem.dll + the cloth_fit_usd bridge +
+            # usd_ms/tbb DLLs + the relocatable usd/ plugin registry.
             - uses: actions/upload-artifact@v4
               with:
-                  name: windows-nif-dll
-                  path: cloth_fit_cli/priv/polyfem.dll
+                  name: windows-nif-priv
+                  path: cloth_fit_cli/priv/
                   if-no-files-found: error
 
     linux:
@@ -124,9 +128,9 @@ jobs:
             - uses: mlugg/setup-zig@v2
               with: { version: '${{ env.ZIG_VERSION }}' }
 
-            - name: Fetch Windows NIF dll
+            - name: Fetch Windows NIF priv/ (dll + USD bridge + runtime + plugins)
               uses: actions/download-artifact@v4
-              with: { name: windows-nif-dll, path: cloth_fit_cli/priv }
+              with: { name: windows-nif-priv, path: cloth_fit_cli/priv }
 
             - name: Assemble Windows Burrito binary
               working-directory: cloth_fit_cli
@@ -135,6 +139,9 @@ jobs:
               run: |
                   set -euo pipefail
                   test -f priv/polyfem.dll
+                  test -f priv/libcloth_fit_usd.dll
+                  test -f priv/libusd_ms.dll
+                  test -d priv/usd
                   mix local.hex --force && mix local.rebar --force
                   mix deps.get
                   MIX_ENV=prod mix release cloth_fit_windows

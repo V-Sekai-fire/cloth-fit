@@ -31,3 +31,6 @@ cloth_fit_cli-*.tar
 /priv/*.so
 /priv/*.dll
 /priv/*.dylib
+# Bundled OpenUSD plugin registry (copied from the stage_runtime download cache
+# by cloth_fit.build_native when CLOTH_FIT_WITH_USD; a build artifact, not source).
+/priv/usd/
