@@ -66,22 +66,7 @@ defmodule ClothFitCli.MixProject do
   # FINE_INCLUDE_DIR is required by Fine; ERTS_INCLUDE_DIR is provided by
   # elixir_make automatically, but we surface it here for clarity.
   defp make_env do
-    base = %{"FINE_INCLUDE_DIR" => Fine.include_dir()}
-
-    # OpenUSD I/O is ABI-matched on Linux/macOS only (mingw vs MSVC on Windows).
-    # Surface the prebuilt usd_ms dirs so the Makefile links it when libpolyfem
-    # was built with POLYFEM_WITH_USD. StageRuntime.* downloads on first use and
-    # caches, so this is cheap on subsequent incremental NIF rebuilds.
-    case :os.type() do
-      {:win32, _} ->
-        base
-
-      _ ->
-        Map.merge(base, %{
-          "USD_INCLUDE_DIR" => StageRuntime.include_dir(),
-          "USD_LIB_DIR" => StageRuntime.lib_dir()
-        })
-    end
+    %{"FINE_INCLUDE_DIR" => Fine.include_dir()}
   end
 
   # Run "mix help compile.app" to learn about applications.

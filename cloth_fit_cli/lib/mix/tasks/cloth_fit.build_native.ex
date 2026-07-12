@@ -44,53 +44,29 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
     tc = toolchain()
     Mix.shell().info("Toolchain: #{inspect(tc)}")
 
-    usd = usd_config(tc)
-
     build_tbb(tc, repo_root, deps_dir, tbb_install, jobs)
-    configure_polyfem(tc, repo_root, build_dir, tbb_install, usd)
+    configure_polyfem(tc, repo_root, build_dir, tbb_install)
     build(build_dir, "polyfem", jobs)
 
     gen_defines(build_dir, Path.join(cli_root, "c_src/polyfem_defines.rsp"))
     gen_link(build_dir, tbb_install, Path.join(cli_root, "c_src/polyfem_link.rsp"))
 
-    build_nif(cli_root, tc, usd)
+    build_nif(cli_root, tc)
 
     Mix.shell().info("Done. NIF built at priv/polyfem.*")
   end
 
-  # OpenUSD mesh I/O is ABI-matched only where PolyFEM's compiler matches the
-  # prebuilt usd_ms's: gcc/libstdc++ on Linux, clang/libc++ on macOS. The
-  # Windows PolyFEM build is llvm-mingw while the stage_runtime Windows archive
-  # is MSVC, so their C++ ABIs cannot link -> USD is disabled there.
-  defp usd_config(%{os: :windows}) do
-    Mix.shell().info("==> OpenUSD I/O disabled on Windows (mingw vs MSVC ABI mismatch)")
-    nil
-  end
-
-  defp usd_config(_tc) do
-    # StageRuntime.root/0 downloads + unpacks the per-triplet prebuilt usd_ms.
-    root = StageRuntime.root()
-    Mix.shell().info("==> OpenUSD I/O enabled: #{root}")
-    %{root: root, include: StageRuntime.include_dir(), lib: StageRuntime.lib_dir()}
-  end
-
-  defp usd_flags(nil), do: []
-  defp usd_flags(%{root: root}), do: ["-DPOLYFEM_WITH_USD=ON", "-DPOLYFEM_USD_ROOT=#{root}"]
-
-  defp usd_env(nil), do: []
-  defp usd_env(%{include: i, lib: l}), do: [{"USD_INCLUDE_DIR", i}, {"USD_LIB_DIR", l}]
-
   # Build the NIF directly via the Makefile. We invoke make here (rather than
   # relying on elixir_make) because within this single `mix` invocation the
   # compiler list was fixed before polyfem_link.rsp existed.
-  defp build_nif(cli_root, tc, usd) do
+  defp build_nif(cli_root, tc) do
     Mix.shell().info("==> Building NIF")
     make = if tc.os == :windows, do: find!("mingw32-make"), else: find!("make")
 
     env = [
       {"FINE_INCLUDE_DIR", Fine.include_dir()},
       {"ERTS_INCLUDE_DIR", erts_include_dir()}
-    ] ++ usd_env(usd)
+    ]
 
     case System.cmd(make, [], cd: cli_root, env: env,
            into: IO.stream(:stdio, :line), stderr_to_stdout: true) do
@@ -170,10 +146,10 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
   # --- PolyFEM ---------------------------------------------------------------
 
-  defp configure_polyfem(tc, repo_root, build_dir, tbb_install, usd) do
+  defp configure_polyfem(tc, repo_root, build_dir, tbb_install) do
     Mix.shell().info("==> Configuring PolyFEM")
 
-    cmd("cmake", ["-S", repo_root, "-B", build_dir] ++ gen_flags(tc) ++ usd_flags(usd) ++
+    cmd("cmake", ["-S", repo_root, "-B", build_dir] ++ gen_flags(tc) ++
           ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON",
            # Emit the polyfem target's include flags into includes_CXX.rsp on
            # every generator (MinGW does this by default, Unix Makefiles inlines

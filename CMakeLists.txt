@@ -250,14 +250,28 @@ if(POLYFEM_WITH_USD)
     find_library(POLYFEM_USD_MS_LIB
         NAMES usd_ms libusd_ms
         PATHS "${POLYFEM_USD_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
-    # pxr headers (and the bundled tbb/oneapi headers they pull in) are only
-    # needed by USDReader/USDWriter, so keep the include private to polyfem.
-    target_include_directories(polyfem PRIVATE "${POLYFEM_USD_ROOT}/include")
-    target_link_libraries(polyfem PUBLIC "${POLYFEM_USD_MS_LIB}")
-    target_compile_definitions(polyfem PRIVATE POLYFEM_WITH_USD)
-    target_compile_definitions(polyfem PRIVATE POLYFEM_USD_PLUGIN_PATH="${POLYFEM_USD_ROOT}/lib/usd")
+
+    # USDReader/USDWriter include third-party OpenUSD headers, which do not
+    # satisfy PolyFEM's strict -Werror set (e.g. -Werror=non-virtual-dtor on Sdf
+    # value types). Build them in their own library that does NOT link
+    # polyfem::warnings, then link it into polyfem. The pxr headers (and the
+    # bundled tbb/oneapi headers they pull in) stay private to this library.
+    add_library(polyfem_usd STATIC
+        "${POLYFEM_SOURCE_DIR}/polyfem/io/USDReader.cpp"
+        "${POLYFEM_SOURCE_DIR}/polyfem/io/USDWriter.cpp")
+    target_compile_features(polyfem_usd PUBLIC cxx_std_17)
+    set_target_properties(polyfem_usd PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    target_include_directories(polyfem_usd
+        PUBLIC "${POLYFEM_SOURCE_DIR}"
+        PRIVATE "${POLYFEM_USD_ROOT}/include")
+    target_compile_definitions(polyfem_usd
+        PRIVATE POLYFEM_WITH_USD POLYFEM_USD_PLUGIN_PATH="${POLYFEM_USD_ROOT}/lib/usd")
+    target_link_libraries(polyfem_usd PUBLIC "${POLYFEM_USD_MS_LIB}")
     # so binaries linking polyfem find libusd_ms + its shared TBB at run time
-    set_property(TARGET polyfem APPEND PROPERTY BUILD_RPATH "${POLYFEM_USD_ROOT}/lib")
+    set_property(TARGET polyfem_usd APPEND PROPERTY BUILD_RPATH "${POLYFEM_USD_ROOT}/lib")
+
+    target_link_libraries(polyfem PUBLIC polyfem_usd)
+    target_compile_definitions(polyfem PUBLIC POLYFEM_WITH_USD)
     message(STATUS "PolyFEM: OpenUSD mesh I/O enabled (${POLYFEM_USD_MS_LIB})")
 endif()
 
