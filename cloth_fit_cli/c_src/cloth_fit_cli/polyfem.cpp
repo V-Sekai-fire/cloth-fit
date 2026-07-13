@@ -3,7 +3,7 @@
 // PolyFEM includes
 #include <polyfem/garment/optimize.hpp>
 #include <polyfem/garment/coordinate_system.hpp>
-#include <polyfem/solver/GarmentNLProblem.hpp>
+#include <polyfem/garment/GarmentNLProblem.hpp>
 #include <polyfem/solver/forms/ContactForm.hpp>
 #include <polyfem/solver/forms/garment_forms/GarmentForm.hpp>
 #include <polyfem/solver/forms/garment_forms/GarmentALForm.hpp>

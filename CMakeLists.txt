@@ -63,6 +63,13 @@ project(PolyFEM DESCRIPTION "A polyvalent C++ FEM library" LANGUAGES C CXX)
 set(POLYFEM_SMALL_N  80 CACHE STRING "Maximum length for stack-allocated vectors (gradient + Hessian).")
 set(POLYFEM_BIG_N   1000 CACHE STRING "Maximum length for stack-allocated vectors (gradient only).")
 
+# The garment-retargeting sources are cloth-fit's domain layer. Keeping them
+# optional lets weftfit/retarget consume this fork as *base PolyFEM* (the
+# computational substrate) with -DPOLYFEM_WITH_GARMENT=OFF, then build the garment
+# core on top through the mesh ports. Default ON so cloth-fit's own build (lib +
+# NIF + garment CLI) is unchanged.
+option(POLYFEM_WITH_GARMENT "Build the garment-retargeting domain layer (cloth-fit)" ON)
+
 # Polyfem options for enabling/disabling optional libraries
 option(POLYFEM_WITH_TESTS     "Build tests"                                 ON)
 option(POLYFEM_WITH_USD       "Build OpenUSD mesh I/O (USDReader/USDWriter)" OFF)
@@ -337,8 +344,9 @@ target_link_libraries(polyfem PRIVATE polyfem::warnings)
 # Polyfem binary
 ################################################################################
 
-# Main executable
-if(POLYFEM_TOPLEVEL_PROJECT)
+# Main executable — the garment retargeting CLI (main.cpp constructs GarmentSolver
+# + the garment forms), so it belongs to the garment domain layer.
+if(POLYFEM_TOPLEVEL_PROJECT AND POLYFEM_WITH_GARMENT)
     add_executable(${PROJECT_NAME}_bin src/polyfem/main.cpp)
 
     target_compile_features(${PROJECT_NAME}_bin PUBLIC cxx_std_14)

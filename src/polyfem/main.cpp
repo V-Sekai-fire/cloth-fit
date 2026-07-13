@@ -15,7 +15,7 @@
 #include <polyfem/solver/forms/garment_forms/CurveConstraintForm.hpp>
 #include <polyfem/solver/forms/garment_forms/CurveCenterTargetForm.hpp>
 #include <polyfem/solver/forms/garment_forms/FitForm.hpp>
-#include <polyfem/solver/GarmentNLProblem.hpp>
+#include <polyfem/garment/GarmentNLProblem.hpp>
 #include <polyfem/solver/ALSolver.hpp>
 #include <polyfem/utils/JSONUtils.hpp>
 #include <polyfem/utils/Logger.hpp>

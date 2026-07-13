@@ -1,6 +1,6 @@
 #include "optimize.hpp"
 
-#include <polyfem/solver/GarmentNLProblem.hpp>
+#include <polyfem/garment/GarmentNLProblem.hpp>
 #include <polyfem/solver/forms/ContactForm.hpp>
 #include <polyfem/io/OBJReader.hpp>
 #include <polyfem/io/OBJWriter.hpp>
