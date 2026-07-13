@@ -332,6 +332,23 @@ if(POLYFEM_WITH_USD)
     message(STATUS "PolyFEM: OpenUSD via bridge (${POLYFEM_USD_MS_LIB})")
 endif()
 
+# The weftfit_retarget SHARED bridge — the only unit exposing the garment solve
+# (garment core's run_retarget) via a narrow extern "C" WFRT_API surface, so
+# consumers (the NIF/CLI, viewer, other bindings) dlopen it and link ZERO PolyFEM/
+# TBB. Mirrors the cloth_fit_usd bridge; only built with the garment domain.
+if(POLYFEM_WITH_GARMENT)
+    set(WFRT_DIR "${PROJECT_SOURCE_DIR}/src/retarget_bridge")
+    add_library(weftfit_retarget SHARED "${WFRT_DIR}/weftfit_retarget.cpp")
+    target_compile_features(weftfit_retarget PRIVATE cxx_std_17)
+    set_target_properties(weftfit_retarget PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    target_include_directories(weftfit_retarget PRIVATE "${WFRT_DIR}")
+    # libpolyfem carries run_retarget; only WFRT_API is exported (PolyFEM/TBB hidden).
+    target_link_libraries(weftfit_retarget PRIVATE polyfem)
+    message(STATUS "PolyFEM: weftfit_retarget solve bridge")
+endif()
+
 ################################################################################
 # Optional libraries
 ################################################################################
