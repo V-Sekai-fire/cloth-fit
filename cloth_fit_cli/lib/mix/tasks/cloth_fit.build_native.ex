@@ -46,22 +46,28 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
     usd = usd_config(tc)
 
-    # PolyFEM keeps its STATIC oneTBB. With USD the CMake also builds the
-    # cloth_fit_usd bridge (which links usd_ms) + the dlopen stub lib; the NIF
-    # links only the stub (no usd_ms, no shared-TBB), and dlopens the bridge — so
-    # the bridge isolates USD's TBB from PolyFEM's (no double-instance abort).
+    # The garment solve now lives entirely behind the weftfit_retarget dlopen
+    # bridge (a SHARED lib that links libpolyfem + the garment core + static TBB,
+    # and — with USD — delay-loads the cloth_fit_usd bridge internally). The NIF
+    # links ONLY the bridge's loader stub + import lib and dlopens it at runtime, so
+    # the NIF itself carries ZERO PolyFEM/TBB/USD. PolyFEM + its deps are still
+    # built here because the bridge links them.
     build_tbb(tc, repo_root, deps_dir, tbb_install, jobs)
     configure_polyfem(tc, repo_root, build_dir, tbb_install, usd)
     build(build_dir, "polyfem", jobs)
-    # The bridge (cloth_fit_usd) is not a link dependency of polyfem, so build it
-    # explicitly; polyfem already pulls in the cloth_fit_usd_stub it links.
+    # cloth_fit_usd is delay-loaded by the bridge (not a hard link dep), so build it
+    # explicitly first; then the weftfit_retarget bridge itself.
     if usd, do: build(build_dir, "cloth_fit_usd", jobs)
+    build(build_dir, "weftfit_retarget", jobs)
+    # The consumer stub (loader + POSIX dlsym table) isn't linked by anything in the
+    # CMake tree — the external NIF links it — so build it explicitly.
+    build(build_dir, "weftfit_retarget_stub", jobs)
 
     gen_defines(build_dir, Path.join(cli_root, "c_src/polyfem_defines.rsp"))
-    gen_link(build_dir, tbb_install, usd, Path.join(cli_root, "c_src/polyfem_link.rsp"))
+    gen_link(build_dir, tc, Path.join(cli_root, "c_src/polyfem_link.rsp"))
 
     build_nif(cli_root, tc)
-    if usd, do: bundle_runtime_libs(cli_root, build_dir, usd)
+    bundle_runtime_libs(cli_root, build_dir, usd)
 
     Mix.shell().info("Done. NIF built at priv/polyfem.*")
   end
@@ -88,41 +94,59 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
   defp usd_flags(nil), do: []
   defp usd_flags(%{root: root}), do: ["-DPOLYFEM_WITH_USD=ON", "-DPOLYFEM_USD_ROOT=#{root}"]
 
-  # Static link inputs the NIF adds for USD: the loader stub always, plus (on
-  # Windows) the bridge's import lib so cfusd_* bind load-time (POSIX binds via the
-  # dlsym stub in libcloth_fit_usd_stub.a).
-  defp usd_link_libs(nil), do: []
-  defp usd_link_libs(%{os: :windows}), do: ["libcloth_fit_usd_stub.a", "libcloth_fit_usd.dll.a"]
-  defp usd_link_libs(_usd), do: ["libcloth_fit_usd_stub.a"]
+  # Static link inputs the NIF adds for the solve bridge: the loader stub always,
+  # plus (on Windows) the bridge's import lib so wf_retarget_* bind via delay-load
+  # (POSIX binds via the dlsym stub baked into libweftfit_retarget_stub.a).
+  defp bridge_link_libs(%{os: :windows}), do: ["libweftfit_retarget_stub.a", "libweftfit_retarget.dll.a"]
+  defp bridge_link_libs(_tc), do: ["libweftfit_retarget_stub.a"]
 
-  # Copy the bridge (cloth_fit_usd) + its runtime deps (usd_ms + oneTBB) + the USD
-  # plugin tree next to the NIF, so the NIF loads a self-contained, relocatable
-  # bridge (cfusd_init finds priv/usd next to the bridge; see cloth_fit_usd.cpp).
-  defp bundle_runtime_libs(cli_root, build_dir, %{root: root, lib: usd_lib}) do
+  # Bundle the self-contained solve bridge next to the NIF. With USD it internally
+  # delay-loads cloth_fit_usd, so that bridge + its runtime deps (usd_ms + oneTBB) +
+  # the USD plugin tree go next to it too — the bridge's cfusd_loader finds priv/usd
+  # and LoadLibraryEx's cloth_fit_usd.dll from priv/ (both bridges share the dir).
+  defp bundle_runtime_libs(cli_root, build_dir, usd) do
     priv = Path.join(cli_root, "priv")
     File.mkdir_p!(priv)
 
-    libs =
-      Path.wildcard(Path.join(build_dir, "libcloth_fit_usd.*")) ++
-        Path.wildcard(Path.join(build_dir, "cloth_fit_usd.dll")) ++
-        Path.wildcard(Path.join(usd_lib, "libusd_ms*")) ++
-        Path.wildcard(Path.join(usd_lib, "usd_ms*")) ++
-        Path.wildcard(Path.join(usd_lib, "libtbb*")) ++
-        Path.wildcard(Path.join(usd_lib, "tbb*"))
+    bridge =
+      Path.wildcard(Path.join(build_dir, "libweftfit_retarget.*")) ++
+        Path.wildcard(Path.join(build_dir, "weftfit_retarget.dll"))
 
-    for src <- libs, not String.ends_with?(src, ".a"), not String.ends_with?(src, ".dll.a") do
+    usd_libs =
+      case usd do
+        %{lib: usd_lib} ->
+          Path.wildcard(Path.join(build_dir, "libcloth_fit_usd.*")) ++
+            Path.wildcard(Path.join(build_dir, "cloth_fit_usd.dll")) ++
+            Path.wildcard(Path.join(usd_lib, "libusd_ms*")) ++
+            Path.wildcard(Path.join(usd_lib, "usd_ms*")) ++
+            Path.wildcard(Path.join(usd_lib, "libtbb*")) ++
+            Path.wildcard(Path.join(usd_lib, "tbb*"))
+
+        nil ->
+          []
+      end
+
+    for src <- bridge ++ usd_libs,
+        not String.ends_with?(src, ".a"),
+        not String.ends_with?(src, ".dll.a") do
       File.cp!(src, Path.join(priv, Path.basename(src)))
     end
 
-    plugin_src = Path.join([root, "lib", "usd"])
-    plugin_dst = Path.join(priv, "usd")
+    case usd do
+      %{root: root} ->
+        plugin_src = Path.join([root, "lib", "usd"])
+        plugin_dst = Path.join(priv, "usd")
 
-    if File.dir?(plugin_src) do
-      File.rm_rf!(plugin_dst)
-      File.cp_r!(plugin_src, plugin_dst)
+        if File.dir?(plugin_src) do
+          File.rm_rf!(plugin_dst)
+          File.cp_r!(plugin_src, plugin_dst)
+        end
+
+        Mix.shell().info("bundled weftfit_retarget + cloth_fit_usd + usd_ms + oneTBB + plugins into priv/")
+
+      nil ->
+        Mix.shell().info("bundled weftfit_retarget bridge into priv/")
     end
-
-    Mix.shell().info("bundled cloth_fit_usd bridge + usd_ms + oneTBB + plugins into priv/")
   end
 
   # Build the NIF directly via the Makefile. We invoke make here (rather than
@@ -132,8 +156,9 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
     Mix.shell().info("==> Building NIF")
     make = if tc.os == :windows, do: find!("mingw32-make"), else: find!("make")
 
-    # The NIF links libpolyfem + the cloth_fit_usd_stub (via polyfem_link.rsp) and
-    # dlopens the bridge — no usd_ms/TBB on its link line, so no USD env is needed.
+    # The NIF links only the weftfit_retarget stub + import lib (via
+    # polyfem_link.rsp) and dlopens the bridge — zero PolyFEM/usd_ms/TBB on its
+    # link line, so no USD env is needed here.
     env = [
       {"FINE_INCLUDE_DIR", Fine.include_dir()},
       {"ERTS_INCLUDE_DIR", erts_include_dir()}
@@ -263,47 +288,22 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
     Mix.shell().info("wrote #{length(defines)} defines -> #{out}")
   end
 
-  # Resolve the static libraries actually produced by the build (per-OS names)
-  # and write a linker response file wrapped in a group so order does not matter.
-  defp gen_link(build_dir, tbb_install, usd, out) do
-    deps = Path.join(build_dir, "_deps")
-
-    rels =
-      [
-        "libpolyfem.a",
-        "_deps/polysolve-build/libpolysolve.a",
-        "_deps/polysolve-build/libpolysolve_linear.a",
-        "_deps/ipc-toolkit-build/libipc_toolkit.a",
-        "_deps/tight-inclusion-build/libtight_inclusion.a",
-        "_deps/scalable-ccd-build/libscalable_ccd.a",
-        "_deps/simplebvh-build/libsimple_bvh.a",
-        "_deps/finite-diff-build/libfinitediff_finitediff.a",
-        "_deps/json-spec-engine-build/libjse.a",
-        "lib/libpredicates.a",
-        "_deps/spdlog-build/libspdlog.a",
-        "_deps/filib-build/libfilib_filib.a",
-        "_deps/openvdb-build/openvdb/openvdb/libopenvdb.a"
-      ] ++ usd_link_libs(usd)
-
-    absl =
-      [deps, "abseil-cpp-build", "absl"]
-      |> Path.join()
-      |> Path.join("**/libabsl_*.a")
-      |> Path.wildcard()
-
-    tbb = [tbb_lib(tbb_install)] |> Enum.reject(&is_nil/1)
-
+  # The NIF links ONLY the weftfit_retarget solve bridge — its loader stub + (on
+  # Windows) its delay-loaded import lib. PolyFEM, its deps, TBB and USD all live
+  # inside the bridge .dll/.so, so none of them appear on the NIF's link line.
+  defp gen_link(build_dir, tc, out) do
     libs =
-      (Enum.map(rels, &Path.join(build_dir, &1)) ++ absl ++ tbb)
+      bridge_link_libs(tc)
+      |> Enum.map(&Path.join(build_dir, &1))
       |> Enum.filter(&File.exists?/1)
 
-    # On Windows the bridge (libcloth_fit_usd.dll) is delay-loaded: the NIF must
-    # load without it (its libusd_ms.dll + tbb deps aren't on the OS search path),
-    # and cfusd_loader::load_from_env() LoadLibraryEx's it from priv/ (altered
-    # search path) before the first cfusd_* call binds the delay thunks.
+    # On Windows the bridge is delay-loaded: the NIF loads without it (the bridge's
+    # own deps — cloth_fit_usd/usd_ms/tbb — aren't on the OS search path), and
+    # wfrt_loader::load_from_env() LoadLibraryEx's it from priv/ (altered search
+    # path) before the first wf_retarget_* call binds the delay thunks.
     delay =
-      case usd do
-        %{os: :windows} -> "-Wl,-delayload,libcloth_fit_usd.dll\n"
+      case tc do
+        %{os: :windows} -> "-Wl,-delayload,libweftfit_retarget.dll\n"
         _ -> ""
       end
 

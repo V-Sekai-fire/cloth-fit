@@ -41,6 +41,11 @@ WFRT_API int32_t wf_retarget_run(const char *config_json, const char *output_dir
 // storage; valid until the next call). Empty string if none.
 WFRT_API const char *wf_retarget_last_error(void);
 
+// Result JSON from the most recent successful wf_retarget_run on this thread
+// (static storage; valid until the next call). Empty string if the last run
+// failed.
+WFRT_API const char *wf_retarget_last_result(void);
+
 #ifdef __cplusplus
 } // extern "C"
 #endif

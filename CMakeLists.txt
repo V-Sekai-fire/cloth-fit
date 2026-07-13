@@ -346,7 +346,62 @@ if(POLYFEM_WITH_GARMENT)
     target_include_directories(weftfit_retarget PRIVATE "${WFRT_DIR}")
     # libpolyfem carries run_retarget; only WFRT_API is exported (PolyFEM/TBB hidden).
     target_link_libraries(weftfit_retarget PRIVATE polyfem)
+    # The bridge's own USD writing (inside run_retarget) goes through the
+    # cloth_fit_usd bridge, which polyfem PUBLIC-links. On Windows delay-load it so
+    # weftfit_retarget.dll loads without usd_ms on the search path; run_retarget's
+    # cfusd_loader::load_from_env() LoadLibraryEx's it from priv/ before first use.
+    if(WIN32 AND POLYFEM_WITH_USD)
+        target_link_options(weftfit_retarget PRIVATE "-Wl,-delayload,libcloth_fit_usd.dll")
+    endif()
+    # Expose the bridge's C ABI + loader headers to consumers built outside this
+    # tree (the NIF Makefile reuses polyfem's include set), mirroring usd_bridge.
+    target_include_directories(polyfem PUBLIC "${WFRT_DIR}")
+    # Find the bridge next to the consumer once bundled into priv/ (relocatable).
+    if(APPLE)
+        set(WFRT_ORIGIN "@loader_path")
+    else()
+        set(WFRT_ORIGIN "$ORIGIN")
+    endif()
+    set_property(TARGET weftfit_retarget APPEND PROPERTY BUILD_RPATH "${WFRT_ORIGIN}")
     message(STATUS "PolyFEM: weftfit_retarget solve bridge")
+
+    # Consumers (the NIF/CLI) bind wf_retarget_* + carry the loader, and link ZERO
+    # PolyFEM/TBB. As with cloth_fit_usd, the mechanism differs by OS.
+    if(WIN32)
+        # llvm-mingw has no dlfcn, so the POSIX dlsym stub can't compile. The
+        # consumer binds wf_retarget_* via the bridge's auto-generated import lib
+        # (delay-loaded on the consumer link line), and the loader LoadLibraryEx's
+        # the bridge from next-to-self. Still zero PolyFEM on the consumer link line.
+        add_library(weftfit_retarget_stub STATIC "${WFRT_DIR}/loader.cpp")
+        target_include_directories(weftfit_retarget_stub PUBLIC "${WFRT_DIR}")
+        set_target_properties(weftfit_retarget_stub PROPERTIES POSITION_INDEPENDENT_CODE ON)
+    else()
+        # POSIX: generate the dlsym dispatch table from the .sigs; the consumer links
+        # a stub with weak wf_retarget_* forwarders + the loader and dlopen's the
+        # bridge (RTLD_GLOBAL) so the exported symbols satisfy the forwarders.
+        find_package(Python3 REQUIRED COMPONENTS Interpreter)
+        set(WFRT_GEN "${CMAKE_BINARY_DIR}/retarget_bridge_generated")
+        add_custom_command(
+            OUTPUT "${WFRT_GEN}/weftfit_retarget_stubs.cc" "${WFRT_GEN}/wfrt/weftfit_retarget_stubs.h"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${WFRT_GEN}/wfrt"
+            COMMAND ${Python3_EXECUTABLE}
+                    "${PROJECT_SOURCE_DIR}/thirdparty/generate_stubs/generate_stubs.py"
+                    -o "${WFRT_GEN}" -i "${WFRT_GEN}" -t posix_stubs
+                    -s weftfit_retarget_stubs -p wfrt -l "std::cerr" -n iostream
+                    --macro-include "${WFRT_DIR}/stubgen_compat.h"
+                    "${WFRT_DIR}/weftfit_retarget.sigs"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                    "${WFRT_GEN}/weftfit_retarget_stubs.h" "${WFRT_GEN}/wfrt/weftfit_retarget_stubs.h"
+            DEPENDS "${WFRT_DIR}/weftfit_retarget.sigs" "${WFRT_DIR}/stubgen_compat.h"
+            COMMENT "Generating weftfit_retarget dlopen stubs")
+
+        add_library(weftfit_retarget_stub STATIC
+            "${WFRT_GEN}/weftfit_retarget_stubs.cc"
+            "${WFRT_DIR}/loader.cpp")
+        target_include_directories(weftfit_retarget_stub PUBLIC "${WFRT_GEN}" "${WFRT_DIR}")
+        set_target_properties(weftfit_retarget_stub PROPERTIES POSITION_INDEPENDENT_CODE ON)
+        target_link_libraries(weftfit_retarget_stub PUBLIC ${CMAKE_DL_LIBS})
+    endif()
 endif()
 
 ################################################################################
