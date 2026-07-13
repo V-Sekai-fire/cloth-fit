@@ -16,6 +16,8 @@ namespace
 {
     // Message for the most recent wf_retarget_run failure on this thread.
     thread_local std::string g_last_error;
+    // Result JSON from the most recent successful wf_retarget_run on this thread.
+    thread_local std::string g_last_result;
 } // namespace
 
 extern "C" {
@@ -36,12 +38,18 @@ WFRT_API int32_t wf_retarget_run(const char *config_json, const char *output_dir
     std::string error;
     const int rc = polyfem::garment::run_retarget(config_json, output_dir, result, error);
     g_last_error = (rc == 0) ? std::string() : error;
+    g_last_result = (rc == 0) ? result : std::string();
     return rc;
 }
 
 WFRT_API const char *wf_retarget_last_error(void)
 {
     return g_last_error.c_str();
+}
+
+WFRT_API const char *wf_retarget_last_result(void)
+{
+    return g_last_result.c_str();
 }
 
 } // extern "C"

@@ -1,37 +1,15 @@
 #include <fine.hpp>
 
-// PolyFEM includes
-#include <polyfem/garment/optimize.hpp>
-#include <polyfem/garment/run_retarget.hpp>
-#include <polyfem/garment/coordinate_system.hpp>
-#include <polyfem/garment/GarmentNLProblem.hpp>
-#include <polyfem/solver/forms/ContactForm.hpp>
-#include <polyfem/solver/forms/garment_forms/GarmentForm.hpp>
-#include <polyfem/solver/forms/garment_forms/GarmentALForm.hpp>
-#include <polyfem/solver/forms/garment_forms/CurveConstraintForm.hpp>
-#include <polyfem/solver/forms/garment_forms/CurveCenterTargetForm.hpp>
-#include <polyfem/solver/forms/garment_forms/FitForm.hpp>
-#include <polyfem/solver/ALSolver.hpp>
-#include <polyfem/utils/JSONUtils.hpp>
-#include <polyfem/utils/Logger.hpp>
-#include <polyfem/mesh/MeshUtils.hpp>
-#include <polyfem/io/OBJWriter.hpp>
-#include <polyfem/io/MatrixIO.hpp>
-#ifdef POLYFEM_WITH_USD
-#include "loader.hpp" // dlopen the cloth_fit_usd bridge (src/usd_bridge)
-#endif
-
-#include <igl/edges.h>
-#include <igl/read_triangle_mesh.h>
-#include <igl/write_triangle_mesh.h>
-#include <igl/readOBJ.h>
-#include <igl/writeOBJ.h>
-
-#include <polysolve/nonlinear/Solver.hpp>
-#include <ipc/ipc.hpp>
+// The garment retarget solve now lives entirely behind the weftfit_retarget
+// dlopen bridge (src/retarget_bridge): the NIF calls wf_retarget_run through the
+// bridge's import lib and LINKS ZERO PolyFEM/TBB — exactly the design already used
+// for USD I/O via cloth_fit_usd. The remaining NIF functions (validate/info) only
+// need the header-only coordinate convention + nlohmann/json + a small OBJ reader.
+#include "weftfit_retarget.h"          // wf_retarget_* C ABI (bound via import lib)
+#include "wfrt_loader.hpp"             // wfrt_loader::load_from_env — dlopen the bridge
+#include <polyfem/garment/coordinate_system.hpp> // header-only (inline; Eigen/json only)
 
 #include <nlohmann/json.hpp>
-#include <spdlog/spdlog.h>
 
 #include <string>
 #include <cstring>
@@ -46,9 +24,6 @@
 #include <chrono>
 
 using json = nlohmann::json;
-using namespace polyfem;
-using namespace polyfem::solver;
-using namespace polyfem::mesh;
 
 // Helpers for building the {:ok, _} / {:error, reason} result tuples that the
 // Elixir API (ClothFitCli.PolyFEM) pattern-matches on.
@@ -172,14 +147,20 @@ struct SimpleMesh {
 };
 
 fine::Term simulate(ErlNifEnv* env, std::string config, std::string output_path) {
-    // Thin wrapper: the solve lives in the garment core (run_retarget), shared
-    // with the weftfit_retarget bridge so there is one implementation.
-    std::string result, err;
-    int rc = polyfem::garment::run_retarget(config, output_path, result, err);
-    if (rc != 0) {
-        return error(env, err.empty() ? std::string("Simulation failed") : err);
+    // The solve runs entirely inside the weftfit_retarget bridge (which links
+    // PolyFEM + the garment core + TBB); the NIF just dlopens it and calls the C
+    // ABI, so the NIF itself carries zero PolyFEM. Same pattern as cloth_fit_usd.
+    if (!wfrt_loader::load_from_env()) {
+        return error(env, "Failed to load the weftfit_retarget solve bridge");
     }
-    return ok_string(env, result);
+    int rc = wf_retarget_run(config.c_str(), output_path.c_str());
+    if (rc != 0) {
+        const char* msg = wf_retarget_last_error();
+        return error(env, (msg != nullptr && msg[0] != '\0') ? std::string(msg)
+                                                             : std::string("Simulation failed"));
+    }
+    const char* result = wf_retarget_last_result();
+    return ok_string(env, (result != nullptr) ? std::string(result) : std::string());
 }
 
 fine::Term validate_garment_mesh(ErlNifEnv* env, std::string mesh_path) {

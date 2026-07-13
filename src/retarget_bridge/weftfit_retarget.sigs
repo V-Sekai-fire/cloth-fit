@@ -28,3 +28,7 @@ const char* wf_retarget_version(void);
 # non-zero on failure; wf_retarget_last_error() carries the message.
 int32_t wf_retarget_run(const char* config_json, const char* output_dir);
 const char* wf_retarget_last_error(void);
+# Result JSON from the most recent successful wf_retarget_run on this thread
+# (status, output_path, timing, iterations, vertex counts). Empty string if the
+# last run failed. Static thread-local storage; valid until the next call.
+const char* wf_retarget_last_result(void);
