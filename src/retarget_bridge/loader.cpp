@@ -17,6 +17,7 @@
 #  include <windows.h>
 #else
 #  include <dlfcn.h>
+#  include "wfrt/weftfit_retarget_stubs.h" // generated POSIX dlsym table (wfrt::)
 #endif
 
 namespace wfrt_loader
@@ -88,8 +89,12 @@ namespace wfrt_loader
         HMODULE h = LoadLibraryExA(bridge.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
         g_loaded = (h != nullptr);
 #else
-        void *h = dlopen(bridge.c_str(), RTLD_NOW | RTLD_GLOBAL);
-        g_loaded = (h != nullptr);
+        // POSIX: InitializeStubs dlopen's the bridge and dlsym's each wf_retarget_*
+        // symbol into the generated weak-stub table, so the consumer's forwarders
+        // dispatch through it (mirrors cfusd_loader).
+        wfrt::StubPathMap paths;
+        paths[wfrt::kModuleWeftfit_retarget] = {bridge};
+        g_loaded = wfrt::InitializeStubs(paths);
 #endif
         return g_loaded;
     }
