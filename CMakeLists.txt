@@ -144,6 +144,19 @@ target_compile_definitions(polyfem PUBLIC -DEIGEN_STACK_ALLOCATION_LIMIT=0)
 target_compile_definitions(polyfem PUBLIC -DPOLYFEM_SMALL_N=${POLYFEM_SMALL_N})
 target_compile_definitions(polyfem PUBLIC -DPOLYFEM_BIG_N=${POLYFEM_BIG_N})
 
+# llvm-mingw links libc++ and libunwind as DLLs by default. Those are toolchain
+# files, not build outputs, so they never reach the artifact, and the bridge then
+# fails to load on any machine without the toolchain -- which is every machine the
+# binary is shipped to. Link them in rather than shipping two more files.
+function(polyfem_static_cxx_runtime target)
+    if(WIN32 AND NOT MSVC)
+        # Plain -static only. -static-libstdc++ sends clang's mingw driver looking
+        # for libmsvcprt.a, which llvm-mingw does not ship, and -static-libgcc is
+        # a GCC flag with no libgcc here to match it.
+        target_link_options(${target} PRIVATE -static)
+    endif()
+endfunction()
+
 set(POLYFEM_JSON_SPEC_DIR "${PROJECT_SOURCE_DIR}/json-specs")
 target_compile_definitions(polyfem PUBLIC POLYFEM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_compile_definitions(polyfem PUBLIC POLYFEM_JSON_SPEC_DIR="${POLYFEM_JSON_SPEC_DIR}")
@@ -200,6 +213,21 @@ target_link_libraries(polyfem PUBLIC openvdb)
 include(polysolve)
 target_link_libraries(polyfem PUBLIC polysolve::polysolve)
 
+# Stage every JSON spec the solve validates against into one directory beside the
+# built libraries, so a shipped binary carries its own specs. The paths compiled
+# in above name the machine that built it and exist nowhere else; SpecPaths.cpp
+# looks here first and falls back to them.
+set(POLYFEM_SPEC_STAGE "${CMAKE_BINARY_DIR}/json-specs")
+file(GLOB POLYFEM_SPEC_FILES "${POLYFEM_JSON_SPEC_DIR}/*.json")
+if(DEFINED polysolve_SOURCE_DIR)
+    file(GLOB POLYSOLVE_SPEC_FILES "${polysolve_SOURCE_DIR}/*-solver-spec.json")
+    list(APPEND POLYFEM_SPEC_FILES ${POLYSOLVE_SPEC_FILES})
+endif()
+file(MAKE_DIRECTORY "${POLYFEM_SPEC_STAGE}")
+file(COPY ${POLYFEM_SPEC_FILES} DESTINATION "${POLYFEM_SPEC_STAGE}")
+list(LENGTH POLYFEM_SPEC_FILES POLYFEM_SPEC_COUNT)
+message(STATUS "PolyFEM: staged ${POLYFEM_SPEC_COUNT} JSON spec(s) into ${POLYFEM_SPEC_STAGE}")
+
 # libigl
 include(libigl)
 target_link_libraries(polyfem PUBLIC igl::core)
@@ -246,6 +274,7 @@ target_link_libraries(polyfem PUBLIC jse::jse)
 
 # OpenUSD (optional): a C-ABI bridge dlopen'd at runtime, NOT linked into PolyFEM.
 #
+
 # The cloth_fit_usd bridge (SHARED) is the ONLY unit that links usd_ms; it exports
 # only its extern "C" CFUSD_API surface (everything pxr/TBB hidden). generate_stubs
 # turns cloth_fit_usd.sigs into a dlsym dispatch table; libpolyfem calls the weak
@@ -278,6 +307,7 @@ if(POLYFEM_WITH_USD)
         POLYFEM_WITH_USD
         POLYFEM_USD_PLUGIN_PATH="${POLYFEM_USD_ROOT}/lib/usd")
     target_link_libraries(cloth_fit_usd PRIVATE "${POLYFEM_USD_MS_LIB}")
+    polyfem_static_cxx_runtime(cloth_fit_usd)
     # Find usd_ms both at the build-time usd tree and next to the bridge once it is
     # bundled into priv/ (relocatable).
     if(APPLE)
@@ -346,6 +376,7 @@ if(POLYFEM_WITH_GARMENT)
     target_include_directories(weftfit_retarget PRIVATE "${WFRT_DIR}")
     # libpolyfem carries run_retarget; only WFRT_API is exported (PolyFEM/TBB hidden).
     target_link_libraries(weftfit_retarget PRIVATE polyfem)
+    polyfem_static_cxx_runtime(weftfit_retarget)
     # The bridge's own USD writing (inside run_retarget) goes through the
     # cloth_fit_usd bridge, which polyfem PUBLIC-links. On Windows delay-load it so
     # weftfit_retarget.dll loads without usd_ms on the search path; run_retarget's
@@ -427,6 +458,7 @@ if(POLYFEM_TOPLEVEL_PROJECT AND POLYFEM_WITH_GARMENT)
 
     include(cli11)
     target_link_libraries(${PROJECT_NAME}_bin PUBLIC CLI11::CLI11)
+    polyfem_static_cxx_runtime(${PROJECT_NAME}_bin)
 
     if(NOT (${CMAKE_VERSION} VERSION_LESS "3.6.0"))
         set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME}_bin)

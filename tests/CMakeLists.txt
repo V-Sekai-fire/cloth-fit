@@ -7,6 +7,7 @@ set(test_sources
   test_tbb.cpp
   test_io.cpp
   test_mesh.cpp
+  test_spec_paths.cpp
 )
 
 add_executable(unit_tests ${test_sources})
@@ -23,6 +24,10 @@ target_link_libraries(unit_tests PUBLIC polyfem::warnings)
 
 include(catch2)
 target_link_libraries(unit_tests PUBLIC Catch2::Catch2WithMain)
+
+# The tests are run from a build tree, but the same toolchain DLLs that would
+# keep a shipped binary from starting keep these from starting too.
+polyfem_static_cxx_runtime(unit_tests)
 
 ################################################################################
 # Compiler options

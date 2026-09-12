@@ -15,6 +15,8 @@ set(SOURCES
 	MaybeParallelFor.tpp
 	par_for.cpp
 	par_for.hpp
+	SpecPaths.cpp
+	SpecPaths.hpp
 	StringUtils.cpp
 	StringUtils.hpp
 	Timer.hpp
