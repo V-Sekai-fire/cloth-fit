@@ -24,6 +24,10 @@ zlib = ">=1.2.13"
 tbb-devel = ">=2021.9,<2022"
 
 [tasks]
+# OpenVDB's blosc and zlib are off to match what the NIF workflow already passes:
+# they are the last two non-system DLLs the binaries import, and without them a
+# built executable runs from anywhere rather than only inside this environment.
+#
 # MKL is off because its static libraries are MSVC-built and pull libmsvcprt,
 # which llvm-mingw has no equivalent for; the solver list in a setup falls back
 # from Eigen::PardisoLDLT to Eigen::SimplicialLDLT on its own.
@@ -34,6 +38,6 @@ tbb-devel = ">=2021.9,<2022"
 # windres, which llvm-mingw ships. Passing -DCMAKE_RC_COMPILER instead does not
 # work: CMake writes the path into a set() verbatim, and $USERPROFILE is
 # backslashed, so C:\Users reads as the invalid escape \U.
-configure = { cmd = "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPOLYSOLVE_WITH_CHOLMOD=OFF -DPOLYSOLVE_WITH_MKL=OFF -DCMAKE_PREFIX_PATH=$CONDA_PREFIX/Library -DCMAKE_C_COMPILER=$LLVM_MINGW/bin/x86_64-w64-mingw32-clang.exe -DCMAKE_CXX_COMPILER=$LLVM_MINGW/bin/x86_64-w64-mingw32-clang++.exe -DLIBM_LIBRARY=$LLVM_MINGW/x86_64-w64-mingw32/lib/libm.a", env = { LLVM_MINGW = "$USERPROFILE/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64", PATH = "$USERPROFILE/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64/bin;$PATH" } }
+configure = { cmd = "cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DPOLYSOLVE_WITH_CHOLMOD=OFF -DPOLYSOLVE_WITH_MKL=OFF -DUSE_BLOSC=OFF -DUSE_ZLIB=OFF -DCMAKE_PREFIX_PATH=$CONDA_PREFIX/Library -DCMAKE_C_COMPILER=$LLVM_MINGW/bin/x86_64-w64-mingw32-clang.exe -DCMAKE_CXX_COMPILER=$LLVM_MINGW/bin/x86_64-w64-mingw32-clang++.exe -DLIBM_LIBRARY=$LLVM_MINGW/x86_64-w64-mingw32/lib/libm.a", env = { LLVM_MINGW = "$USERPROFILE/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64", PATH = "$USERPROFILE/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64/bin;$PATH" } }
 build = { cmd = "cmake --build build", env = { PATH = "$USERPROFILE/llvm-mingw/llvm-mingw-20260826-ucrt-x86_64/bin;$PATH" } }
 ctest = "ctest --test-dir build --output-on-failure"

@@ -144,6 +144,19 @@ target_compile_definitions(polyfem PUBLIC -DEIGEN_STACK_ALLOCATION_LIMIT=0)
 target_compile_definitions(polyfem PUBLIC -DPOLYFEM_SMALL_N=${POLYFEM_SMALL_N})
 target_compile_definitions(polyfem PUBLIC -DPOLYFEM_BIG_N=${POLYFEM_BIG_N})
 
+# llvm-mingw links libc++ and libunwind as DLLs by default. Those are toolchain
+# files, not build outputs, so they never reach the artifact, and the bridge then
+# fails to load on any machine without the toolchain -- which is every machine the
+# binary is shipped to. Link them in rather than shipping two more files.
+function(polyfem_static_cxx_runtime target)
+    if(WIN32 AND NOT MSVC)
+        # Plain -static only. -static-libstdc++ sends clang's mingw driver looking
+        # for libmsvcprt.a, which llvm-mingw does not ship, and -static-libgcc is
+        # a GCC flag with no libgcc here to match it.
+        target_link_options(${target} PRIVATE -static)
+    endif()
+endfunction()
+
 set(POLYFEM_JSON_SPEC_DIR "${PROJECT_SOURCE_DIR}/json-specs")
 target_compile_definitions(polyfem PUBLIC POLYFEM_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 target_compile_definitions(polyfem PUBLIC POLYFEM_JSON_SPEC_DIR="${POLYFEM_JSON_SPEC_DIR}")
@@ -261,18 +274,6 @@ target_link_libraries(polyfem PUBLIC jse::jse)
 
 # OpenUSD (optional): a C-ABI bridge dlopen'd at runtime, NOT linked into PolyFEM.
 #
-# llvm-mingw links libc++ and libunwind as DLLs by default. Those are toolchain
-# files, not build outputs, so they never reach the artifact, and the bridge then
-# fails to load on any machine without the toolchain -- which is every machine the
-# binary is shipped to. Link them in rather than shipping two more files.
-function(polyfem_static_cxx_runtime target)
-    if(WIN32 AND NOT MSVC)
-        # Plain -static only. -static-libstdc++ sends clang's mingw driver looking
-        # for libmsvcprt.a, which llvm-mingw does not ship, and -static-libgcc is
-        # a GCC flag with no libgcc here to match it.
-        target_link_options(${target} PRIVATE -static)
-    endif()
-endfunction()
 
 # The cloth_fit_usd bridge (SHARED) is the ONLY unit that links usd_ms; it exports
 # only its extern "C" CFUSD_API surface (everything pxr/TBB hidden). generate_stubs
@@ -457,6 +458,7 @@ if(POLYFEM_TOPLEVEL_PROJECT AND POLYFEM_WITH_GARMENT)
 
     include(cli11)
     target_link_libraries(${PROJECT_NAME}_bin PUBLIC CLI11::CLI11)
+    polyfem_static_cxx_runtime(${PROJECT_NAME}_bin)
 
     if(NOT (${CMAKE_VERSION} VERSION_LESS "3.6.0"))
         set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT ${PROJECT_NAME}_bin)
