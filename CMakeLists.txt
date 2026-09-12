@@ -267,7 +267,10 @@ target_link_libraries(polyfem PUBLIC jse::jse)
 # binary is shipped to. Link them in rather than shipping two more files.
 function(polyfem_static_cxx_runtime target)
     if(WIN32 AND NOT MSVC)
-        target_link_options(${target} PRIVATE -static -static-libgcc -static-libstdc++)
+        # Plain -static only. -static-libstdc++ sends clang's mingw driver looking
+        # for libmsvcprt.a, which llvm-mingw does not ship, and -static-libgcc is
+        # a GCC flag with no libgcc here to match it.
+        target_link_options(${target} PRIVATE -static)
     endif()
 endfunction()
 

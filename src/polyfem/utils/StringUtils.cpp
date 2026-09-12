@@ -1,5 +1,7 @@
 #include "StringUtils.hpp"
 #include <iomanip>
+// std::ws below lives in <istream>; libstdc++ drags it in and libc++ does not.
+#include <istream>
 #include <algorithm>
 #include <functional>
 

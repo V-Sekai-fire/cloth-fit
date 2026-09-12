@@ -94,3 +94,5 @@ garment-data/*/log
 
 _build/
 cloth_fit_cli/_build/
+
+.pixi
