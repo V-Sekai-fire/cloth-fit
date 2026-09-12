@@ -12,6 +12,7 @@
 #include <polyfem/mesh/MeshUtils.hpp>
 #include <polyfem/utils/JSONUtils.hpp>
 #include <polyfem/utils/par_for.hpp>
+#include <polyfem/utils/SpecPaths.hpp>
 #include <polyfem/utils/StringUtils.hpp>
 #include <polyfem/utils/Logger.hpp>
 #include <polyfem/utils/MatrixUtils.hpp>
@@ -1336,7 +1337,7 @@ namespace polyfem {
 		jse::JSE jse;
 		{
 			jse.strict = strict_validation;
-			const std::string polyfem_input_spec = POLYFEM_INPUT_SPEC;
+			const std::string polyfem_input_spec = utils::input_spec_path();
 			std::ifstream file(polyfem_input_spec);
 
 			if (file.is_open())
@@ -1347,8 +1348,8 @@ namespace polyfem {
 				throw std::runtime_error("Invald spec file");
 			}
 
-			jse.include_directories.push_back(POLYFEM_JSON_SPEC_DIR);
-			jse.include_directories.push_back(POLYSOLVE_JSON_SPEC_DIR);
+			for (const std::string &dir : utils::spec_dirs())
+				jse.include_directories.push_back(dir);
 			rules = jse.inject_include(rules);
 
 			polysolve::linear::Solver::apply_default_solver(rules, "/solver/linear");

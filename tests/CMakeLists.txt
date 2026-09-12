@@ -7,6 +7,7 @@ set(test_sources
   test_tbb.cpp
   test_io.cpp
   test_mesh.cpp
+  test_spec_paths.cpp
 )
 
 add_executable(unit_tests ${test_sources})

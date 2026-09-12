@@ -132,6 +132,8 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
       File.cp!(src, Path.join(priv, Path.basename(src)))
     end
 
+    bundle_json_specs(build_dir, priv)
+
     case usd do
       %{root: root} ->
         plugin_src = Path.join([root, "lib", "usd"])
@@ -146,6 +148,24 @@ defmodule Mix.Tasks.ClothFit.BuildNative do
 
       nil ->
         Mix.shell().info("bundled weftfit_retarget bridge into priv/")
+    end
+  end
+
+  # The spec paths compiled into libpolyfem name the machine that built it --
+  # D:/a/cloth-fit on a Windows runner, /home/runner/work on a Linux one -- and
+  # exist nowhere else, so a shipped binary could only validate its input on the
+  # build machine. CMake stages every spec into build/json-specs; carry that next
+  # to the bridge, where SpecPaths.cpp looks before the compiled-in paths.
+  defp bundle_json_specs(build_dir, priv) do
+    src = Path.join(build_dir, "json-specs")
+    dst = Path.join(priv, "json-specs")
+
+    if File.dir?(src) do
+      File.rm_rf!(dst)
+      File.cp_r!(src, dst)
+      Mix.shell().info("bundled #{length(File.ls!(dst))} JSON spec(s) into priv/json-specs")
+    else
+      Mix.raise("no staged JSON specs at #{src}; the binary would not be relocatable")
     end
   end
 
