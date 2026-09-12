@@ -149,6 +149,7 @@ int main(int argc, char **argv)
 
 	gstate.out_folder = out_folder;
 	gstate.out_format = in_args.value("/output/format"_json_pointer, std::string("obj"));
+	gstate.shrink_blend = in_args.value("shrink_blend", 1e-2);
 #ifdef POLYFEM_WITH_USD
 	cfusd_loader::load_from_env(); // dlopen the USD bridge (no-op if already loaded)
 #endif

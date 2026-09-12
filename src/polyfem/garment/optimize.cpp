@@ -1,3 +1,4 @@
+#include <algorithm>   // std::clamp for the shrink blend
 #include "optimize.hpp"
 
 #include <polyfem/garment/GarmentNLProblem.hpp>
@@ -1300,7 +1301,26 @@ namespace polyfem {
             skinny_avatar_f = nc_avatar_f;
         }
 
-        skinny_avatar_v += (nc_avatar_v - skinny_avatar_v) * 1e-2;
+        // Blend back toward the real body instead of starting from the full
+        // collapse. The collapse is all-or-nothing: neighbouring vertices land on
+        // different bones and the triangle between them stretches across the
+        // body, and those slivers are what cut through the garment, so the solve
+        // refuses to start. Upstream fixes that by exploding the mesh into
+        // disconnected triangles and subdividing, which is what the
+        // topology-preserving path above exists to avoid -- it would discard the
+        // texture coordinates and materials this fork deliberately keeps.
+        //
+        // A partial shrink keeps every vertex, every triangle and every UV. The
+        // fraction is how far the start sits from the real body: 0 is the full
+        // collapse, 1 is no shrink at all. It is a config value rather than a
+        // constant because the right amount depends on how loose the garment is,
+        // and the caller can measure it rather than guess.
+        {
+            const double blend = std::clamp(shrink_blend, 0.0, 1.0);
+            skinny_avatar_v += (nc_avatar_v - skinny_avatar_v) * blend;
+            logger().info("Shrunk avatar blended {:.3f} toward the target body "
+                          "(0 = fully collapsed onto the skeleton, 1 = no shrink)", blend);
+        }
     }
 
     void GarmentSolver::normalize_meshes()

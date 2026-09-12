@@ -83,6 +83,18 @@ namespace polyfem {
         // Output mesh format for save_result / one-shot writes: "obj" or "usd".
         std::string out_format = "obj";
 
+        // How far the shrunk avatar sits from the real body at the start of the
+        // solve. 0 is the full collapse onto the skeleton, 1 is no shrink.
+        //
+        // The full collapse puts neighbouring vertices on different bones and
+        // stretches the triangle between them across the body; those slivers cut
+        // through the garment and the solve refuses to start. Upstream repairs
+        // that by exploding the mesh and subdividing, which discards the texture
+        // coordinates and materials this fork keeps. A partial shrink keeps every
+        // vertex, triangle and UV, and how much is enough depends on how loose
+        // the garment is, so it is measured rather than fixed.
+        double shrink_blend = 1e-2;
+
         // Original avatar mesh
         Eigen::MatrixXd avatar_v;
         Eigen::MatrixXi avatar_f;
