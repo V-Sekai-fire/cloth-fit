@@ -95,6 +95,18 @@ namespace polyfem {
         // the garment is, so it is measured rather than fixed.
         double shrink_blend = 1e-2;
 
+        // Shrink the starting body inward along its own normals by this distance
+        // instead of collapsing it onto the skeleton. Zero keeps the collapse.
+        //
+        // The collapse folds: neighbouring vertices go to different bones and the
+        // triangle between them stretches across the body, so the start
+        // self-intersects and the solve refuses to begin. A normal offset moves
+        // every vertex the same small distance along its own normal, so
+        // neighbours stay neighbours and every texture coordinate survives
+        // untouched. Too large an offset turns concave detail inside out, so the
+        // useful range is below the body's local thickness.
+        double shrink_normal_distance = 0.0;
+
         // Original avatar mesh
         Eigen::MatrixXd avatar_v;
         Eigen::MatrixXi avatar_f;

@@ -92,6 +92,7 @@ namespace polyfem::garment
         gstate.out_folder = output_dir;
         gstate.out_format = args.value("/output/format"_json_pointer, std::string("obj"));
         gstate.shrink_blend = args.value("shrink_blend", 1e-2);
+        gstate.shrink_normal_distance = args.value("shrink_normal_distance", 0.0);
 #ifdef POLYFEM_WITH_USD
         cfusd_loader::load_from_env(); // dlopen the USD bridge (no-op if already loaded)
 #endif
@@ -175,8 +176,12 @@ namespace polyfem::garment
                 return (vi >= n_avatar_verts && vj < n_avatar_verts) || (vi < n_avatar_verts && vj >= n_avatar_verts);
         };
 
-        // Check for initial intersections
-        gstate.check_intersections(collision_mesh, collision_vertices);
+        // The intersection-free start is the barrier's precondition.
+        if (args["contact"]["enabled"])
+            gstate.check_intersections(collision_mesh, collision_vertices);
+        else
+            logger().warn("contact disabled: starting from a possibly intersecting "
+                          "state, penalties only, no intersection-free guarantee");
 
         // Set up boundary curves and targets
         auto curves = boundary_curves(collision_triangles.bottomRows(gstate.n_garment_faces()));

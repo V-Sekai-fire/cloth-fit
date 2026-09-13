@@ -18,6 +18,7 @@
 #include <polyfem/utils/Logger.hpp>
 #include <polyfem/utils/MatrixUtils.hpp>
 
+#include <igl/per_vertex_normals.h>
 #include <igl/edges.h>
 #include <igl/read_triangle_mesh.h>
 #include <igl/readOBJ.h>
@@ -1315,6 +1316,28 @@ namespace polyfem {
         // collapse, 1 is no shrink at all. It is a config value rather than a
         // constant because the right amount depends on how loose the garment is,
         // and the caller can measure it rather than guess.
+        if (shrink_normal_distance > 0.0)
+        {
+            // Shrink the body ALONG ITS OWN NORMALS instead of collapsing it onto
+            // the skeleton. Only vertex positions move: the same vertices, the
+            // same triangles, the same texture coordinates and materials, so
+            // nothing is lost and nothing has to be exploded.
+            //
+            // It also does not fold, which the collapse does. Collapsing sends
+            // neighbouring vertices to different bones and stretches the triangle
+            // between them across the body; an inward offset moves every vertex
+            // the same small distance along its own normal, so neighbours stay
+            // neighbours. The one limit is concave detail: an offset larger than
+            // the local thickness turns a crease inside out, so between fingers
+            // and under the arms the distance has to stay modest.
+            Eigen::MatrixXd normals;
+            igl::per_vertex_normals(nc_avatar_v, nc_avatar_f, normals);
+            skinny_avatar_v = nc_avatar_v - normals * shrink_normal_distance;
+            skinny_avatar_f = nc_avatar_f;
+            logger().info("Shrunk avatar inward {:.4f} along its own normals, "
+                          "topology and UVs unchanged", shrink_normal_distance);
+        }
+        else
         {
             const double blend = std::clamp(shrink_blend, 0.0, 1.0);
             skinny_avatar_v += (nc_avatar_v - skinny_avatar_v) * blend;
