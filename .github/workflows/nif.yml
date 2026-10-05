@@ -23,6 +23,10 @@ env:
     ELIXIR_VERSION: '1.18'
     ZIG_VERSION: '0.15.2'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
     windows-nif:
         name: Windows NIF (llvm-mingw)
