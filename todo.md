@@ -69,6 +69,8 @@ This document outlines the roadmap for creating a pure Elixir library with Unife
 
 **🔄 Current Focus:** Actual simulation execution testing (simulate/2 NIF)
 **Ready for:** Full simulation testing with real garment fitting workflows
+**Next:** Phase 5: Library API Design — starts only after Phase 4.5 sim tests pass
+**Status: Paused (2026-10-21) — Phase 4.5 sim tests in progress; resume by running them, then start Phase 5 once they pass.**
 
 ## Implementation Approach
 
@@ -200,6 +202,8 @@ The current implementation provides a solid foundation that can be extended base
 - [ ] Validate cleanup and resource management
 
 ## Phase 5: Library API Design
+
+**Gate:** Next step — begin only after Phase 4.5 actual simulation testing passes.
 
 ### Public API
 
